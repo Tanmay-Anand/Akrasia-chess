@@ -1,4 +1,6 @@
-# ♟ Akrasia
+# Akrasia
+
+<img src="Socrates_Louvre.jpeg" width="50%">
 
 A personal, fully offline chess analytics and improvement system. Connect your Chess.com account, let the AI analyze your games, identify your recurring weaknesses, and generate a training plan tailored to your actual play — not generic advice.
 
@@ -9,31 +11,35 @@ Built with **Java 21 + Spring Boot**, **PostgreSQL**, **Ollama (local LLM)**, an
 ## What It Does
 
 ### Dashboard
+
 Your chess at a glance. Rating trend over time, win/loss/draw breakdown, opening distribution across your recent games, and accuracy trends — all derived from your Chess.com data.
 
 ### Tab 1 — Game Analysis
-Select any of your fetched games and get move-by-move AI coaching. Every mistake is flagged with its severity (blunder, inaccuracy, missed opportunity), the better move, and a plain-English explanation of *why* — not just what.
+
+Select any of your fetched games and get move-by-move AI coaching. Every mistake is flagged with its severity (blunder, inaccuracy, missed opportunity), the better move, and a plain-English explanation of _why_ — not just what.
 
 ### Tab 2 — Pattern Report
-Cross-game aggregation. Instead of per-game feedback, this tells you what *keeps* happening: which move range you blunder in most, which tactical motifs catch you repeatedly, and where your opening preparation breaks down.
+
+Cross-game aggregation. Instead of per-game feedback, this tells you what _keeps_ happening: which move range you blunder in most, which tactical motifs catch you repeatedly, and where your opening preparation breaks down.
 
 ### Tab 3 — Training Plan
+
 The AI reads your Tab 1 + Tab 2 findings and generates a prioritized, concrete improvement list: specific openings to drill, tactical patterns to study, and positional habits to fix. Regenerates every time you sync new games.
 
 ---
 
 ## Tech Stack
 
-| Layer | Technology |
-|---|---|
-| Backend | Java 21, Spring Boot 3 |
-| AI / LLM | Ollama (`qwen2.5:14b` Q4_K_M) |
-| Database | PostgreSQL |
-| PGN Parsing | `bhlangonijr/chess-library` |
+| Layer       | Technology                                 |
+| ----------- | ------------------------------------------ |
+| Backend     | Java 21, Spring Boot 3                     |
+| AI / LLM    | Ollama (`qwen2.5:14b` Q4_K_M)              |
+| Database    | PostgreSQL                                 |
+| PGN Parsing | `bhlangonijr/chess-library`                |
 | Data Source | Chess.com Public API (free, no key needed) |
-| Frontend | React + TypeScript |
-| Charts | Recharts |
-| Build | Maven |
+| Frontend    | React + TypeScript                         |
+| Charts      | Recharts                                   |
+| Build       | Maven                                      |
 
 ---
 
