@@ -1,0 +1,26 @@
+{
+  "name": "praxis-chess-frontend",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.0",
+    "@tanstack/react-query": "^5.56.0",
+    "recharts": "^3.0.0",
+    "react-chessboard": "^4.6.1",
+    "chess.js": "^1.1.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.5",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "latest",
+    "typescript": "^5.5.4",
+    "vite": "^8.0.0"
+  }
+}

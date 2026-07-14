@@ -1,0 +1,92 @@
+spring:
+  application:
+    name: praxis-chess
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/praxis_chess?ApplicationName=praxis-chess
+    username: praxis_chess_user
+    password: praxis_chess_pass   # matches infra/dev-postgresql/docker-compose.yml default
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      pool-name: praxis-chess-hikari
+      maximum-pool-size: 5
+      minimum-idle: 2
+      connection-timeout: 30000
+      validation-timeout: 5000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      keepalive-time: 300000
+      auto-commit: true
+      connection-test-query: SELECT 1
+      initialization-fail-timeout: -1
+      data-source-properties:
+        reWriteBatchedInserts: true
+        tcpKeepAlive: true
+        prepareThreshold: 0
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+        jdbc:
+          time-zone: UTC
+          batch_size: 500
+        order_inserts: true
+        order_updates: true
+        batch_versioned_data: true
+        cache:
+          use_second_level_cache: false
+          use_query_cache: false
+
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+    time-zone: UTC
+
+server:
+  port: 8086
+  forward-headers-strategy: NATIVE
+
+praxis-chess:
+  ollama:
+    base-url: http://localhost:11434
+    model: qwen2.5:14b
+  chess-com:
+    username: YOUR_CHESS_COM_USERNAME_HERE
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+    tags-sorter: alpha
+    doc-expansion: none
+  default-produces-media-type: application/json
+
+# Mirrors Builder-CRM monitoring — traces go to contract-sentinel at :8090
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, prometheus, env, jfr
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    distribution:
+      percentiles:
+        "[http.server.requests]": 0.5, 0.95, 0.99
+  tracing:
+    sampling:
+      probability: 1.0
+  zipkin:
+    tracing:
+      endpoint: http://localhost:8090/api/traces/zipkin
+
+logging:
+  level:
+    com.praxis: DEBUG

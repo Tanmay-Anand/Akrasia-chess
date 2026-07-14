@@ -1,0 +1,12 @@
+package com.praxis.repository;
+
+import com.praxis.domain.TrainingPlan;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.util.Optional;
+import java.util.UUID;
+
+public interface TrainingPlanRepository extends JpaRepository<TrainingPlan, UUID> {
+
+    Optional<TrainingPlan> findTopByUsernameOrderByGeneratedAtDesc(String username);
+}
