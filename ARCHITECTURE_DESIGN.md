@@ -1,4 +1,4 @@
-# Architecture Design — Akrasia
+# Architecture Design — Praxis-Chess
 
 **Status:** Draft v1
 **Stack:** Java 21 · Spring Boot 3 · PostgreSQL · Ollama · React + TypeScript

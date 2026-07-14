@@ -1,4 +1,4 @@
-# Akrasia
+# Praxis-Chess
 
 <img src="Socrates_Louvre.jpeg" width="10%">
 
@@ -57,8 +57,8 @@ The AI reads your Tab 1 + Tab 2 findings and generates a prioritized, concrete i
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/Tanmay-Anand/akrasia.git
-cd akrasia
+git clone https://github.com/Tanmay-Anand/praxis-chess.git
+cd praxis-chess
 ```
 
 ### 2. Pull the LLM model
@@ -72,9 +72,9 @@ ollama pull qwen2.5:14b
 ### 3. Set up PostgreSQL
 
 ```sql
-CREATE DATABASE akrasia;
-CREATE USER akrasia_user WITH PASSWORD 'your_password';
-GRANT ALL PRIVILEGES ON DATABASE akrasia TO akrasia_user;
+CREATE DATABASE praxis_chess;
+CREATE USER praxis_chess_user WITH PASSWORD 'your_password';
+GRANT ALL PRIVILEGES ON DATABASE praxis_chess TO praxis_chess_user;
 ```
 
 ### 4. Configure the application
@@ -88,11 +88,11 @@ cp src/main/resources/application.example.yml src/main/resources/application.yml
 ```yaml
 spring:
   datasource:
-    url: jdbc:postgresql://localhost:5432/akrasia
-    username: akrasia_user
+    url: jdbc:postgresql://localhost:5432/praxis_chess
+    username: praxis_chess_user
     password: your_password
 
-akrasia:
+praxis-chess:
   ollama:
     base-url: http://localhost:11434
     model: qwen2.5:14b
@@ -146,10 +146,10 @@ This means results are consistent, parseable, and storable — not dependent on 
 ## Project Structure
 
 ```
-akrasia/
+praxis-chess/
 ├── src/
 │   └── main/
-│       ├── java/com/akrasia/
+│       ├── java/com/praxis/
 │       │   ├── api/              # REST controllers
 │       │   ├── domain/           # Domain models and enums
 │       │   ├── service/
