@@ -1,0 +1,23 @@
+# Application secrets — copy from application.example.yml and fill in
+backend/src/main/resources/application.yml
+
+# Maven
+backend/target/
+*.class
+*.jar
+
+# Docker infra data
+backend/infra/dev-postgresql/postgres_data/
+
+# IDE
+.idea/workspace.xml
+*.iml
+.vscode/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# OS
+.DS_Store
+Thumbs.db
