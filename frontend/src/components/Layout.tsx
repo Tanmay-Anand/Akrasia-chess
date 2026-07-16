@@ -16,8 +16,15 @@ export function Layout() {
         top: 0,
         zIndex: 100,
       }}>
-        <span style={{ fontWeight: 700, fontSize: '1rem', color: 'var(--accent)', marginRight: 8 }}>
-          ♟ Praxis
+        <span style={{
+          fontWeight: 700,
+          fontSize: '1rem',
+          color: 'var(--accent)',
+          marginRight: 8,
+          borderBottom: '2px solid transparent',
+          paddingBottom: 2,
+        }}>
+          Praxis
         </span>
         {[
           { to: '/', label: 'Dashboard' },

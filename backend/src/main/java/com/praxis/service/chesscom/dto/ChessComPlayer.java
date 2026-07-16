@@ -8,5 +8,6 @@ public record ChessComPlayer(
     String username,
     int rating,
     String result,
-    @JsonProperty("@id") String id
+    @JsonProperty("@id") String id,
+    Double accuracy
 ) {}

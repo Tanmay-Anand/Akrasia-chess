@@ -1,11 +1,37 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
+import { Chess } from 'chess.js'
 import { api } from '../api/client'
 import { useGameAnalysis } from '../hooks/useGameAnalysis'
 import { MoveErrorCard } from '../components/MoveErrorCard'
 import { ChessBoard } from '../components/ChessBoard'
 import type { MoveError } from '../api/types'
+
+function sanToSquares(fen: string, san: string): { from: string; to: string } | null {
+  try {
+    const chess = new Chess(fen)
+    const move = chess.move(san)
+    return move ? { from: move.from, to: move.to } : null
+  } catch {
+    return null
+  }
+}
+
+function getArrows(error: MoveError) {
+  if (!error.fen_position) return []
+  const arrows: { from: string; to: string; color: string }[] = []
+
+  const played = sanToSquares(error.fen_position, error.move_played)
+  if (played) arrows.push({ ...played, color: 'rgb(220, 60, 60)' })
+
+  if (error.better_move) {
+    const better = sanToSquares(error.fen_position, error.better_move)
+    if (better) arrows.push({ ...better, color: 'rgb(50, 190, 100)' })
+  }
+
+  return arrows
+}
 
 export function GameAnalysis() {
   const { id } = useParams<{ id: string }>()
@@ -21,6 +47,8 @@ export function GameAnalysis() {
   const { data: errors, isLoading } = useGameAnalysis(id ?? null)
 
   if (isLoading) return <p style={{ color: 'var(--text-muted)' }}>Loading analysis...</p>
+
+  const arrows = selectedError ? getArrows(selectedError) : []
 
   return (
     <div>
@@ -44,10 +72,19 @@ export function GameAnalysis() {
           <ChessBoard
             fen={selectedError?.fen_position}
             playerColor={game?.player_color}
+            arrows={arrows}
           />
           {selectedError && (
             <div style={{ marginTop: 12, fontSize: '0.78rem', color: 'var(--text-muted)' }}>
               Position before move {Math.ceil(selectedError.move_number / 2)}.{selectedError.move_played}
+            </div>
+          )}
+          {selectedError && arrows.length > 0 && (
+            <div style={{ marginTop: 6, fontSize: '0.72rem', display: 'flex', gap: 14 }}>
+              <span style={{ color: 'rgb(220, 60, 60)', fontWeight: 600 }}>▶ {selectedError.move_played}</span>
+              {selectedError.better_move && (
+                <span style={{ color: 'rgb(50, 190, 100)', fontWeight: 600 }}>✓ {selectedError.better_move}</span>
+              )}
             </div>
           )}
           {!selectedError && (

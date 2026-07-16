@@ -56,6 +56,10 @@ praxis-chess:
     model: qwen2.5:14b
   chess-com:
     username: YOUR_CHESS_COM_USERNAME_HERE
+  stockfish:
+    # Download from https://stockfishchess.org/download/ → Windows → stockfish_..._win_x86-64-avx2.exe
+    # Rename the .exe to stockfish.exe and paste the path here (use forward slashes)
+    path: ""   # e.g. C:/tools/stockfish/stockfish.exe
 
 springdoc:
   api-docs:

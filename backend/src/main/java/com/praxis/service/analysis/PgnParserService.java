@@ -15,6 +15,7 @@ public class PgnParserService {
 
     private static final Pattern HEADER_PATTERN = Pattern.compile("\\[([\\w]+)\\s+\"([^\"]*)\"]");
     private static final Pattern CLOCK_PATTERN  = Pattern.compile("\\[%clk (\\d+):(\\d+):(\\d+)]");
+    private static final Pattern EVAL_PATTERN   = Pattern.compile("\\[%eval (#?-?\\d+(?:\\.\\d+)?)\\]");
     private static final Pattern MOVE_NUMBER    = Pattern.compile("\\d+\\.+");
     private static final Pattern RESULT_TOKEN   = Pattern.compile("1-0|0-1|1/2-1/2|\\*");
     private static final Pattern COMMENT_BLOCK  = Pattern.compile("\\{[^}]*}");
@@ -32,17 +33,18 @@ public class PgnParserService {
 
         List<String> sanMoves = extractSanMoves(rawPgn);
         List<Integer> clocks  = extractClocks(rawPgn);
+        List<Double>  evals   = extractEvals(rawPgn);
 
         if (sanMoves.isEmpty()) {
             return new ParsedGame(gameId, eco, openingName, 0, result, playerColor, List.of());
         }
 
-        List<ParsedMove> parsedMoves = replayMoves(sanMoves, clocks);
+        List<ParsedMove> parsedMoves = replayMoves(sanMoves, clocks, evals);
 
         return new ParsedGame(gameId, eco, openingName, parsedMoves.size(), result, playerColor, parsedMoves);
     }
 
-    private List<ParsedMove> replayMoves(List<String> sanMoves, List<Integer> clocks) {
+    private List<ParsedMove> replayMoves(List<String> sanMoves, List<Integer> clocks, List<Double> evals) {
         MoveList moveList = new MoveList();
         try {
             moveList.loadFromSan(String.join(" ", sanMoves));
@@ -60,12 +62,29 @@ public class PgnParserService {
             board.doMove(move);
             String fenAfter = board.getFen();
             Integer clock = i < clocks.size() ? clocks.get(i) : null;
+            Double eval   = i < evals.size()  ? evals.get(i)  : null;
             String san = i < sanMoves.size() ? sanMoves.get(i) : move.toString();
 
-            result.add(new ParsedMove(i + 1, san, fenBefore, fenAfter, clock));
+            result.add(new ParsedMove(i + 1, san, fenBefore, fenAfter, clock, eval));
         }
 
         return result;
+    }
+
+    private List<Double> extractEvals(String pgn) {
+        List<Double> evals = new ArrayList<>();
+        Matcher m = EVAL_PATTERN.matcher(pgn);
+        while (m.find()) {
+            String raw = m.group(1);
+            if (raw.startsWith("#")) {
+                // Mate score: #5 = White mates in 5 (+100), #-3 = Black mates in 3 (-100)
+                int mateIn = Integer.parseInt(raw.substring(1));
+                evals.add(mateIn >= 0 ? 100.0 : -100.0);
+            } else {
+                evals.add(Double.parseDouble(raw));
+            }
+        }
+        return evals;
     }
 
     private Map<String, String> parseHeaders(String pgn) {

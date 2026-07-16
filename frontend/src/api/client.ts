@@ -1,4 +1,5 @@
 import type {
+  AnalysisProgress,
   DashboardStats,
   GameSummary,
   MoveError,
@@ -7,6 +8,7 @@ import type {
   SyncStatus,
   TrainingPlan,
 } from './types'
+
 
 const BASE = '/api'
 
@@ -30,6 +32,11 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ months }),
       }),
+    forceResync: (months = 3) =>
+      request<{ message: string; gamesUpdated: number }>('/sync/force-resync', {
+        method: 'POST',
+        body: JSON.stringify({ months }),
+      }),
     status: () => request<SyncStatus>('/sync/status'),
   },
 
@@ -47,6 +54,9 @@ export const api = {
 
   analysis: {
     moveErrors: (gameId: string) => request<MoveError[]>(`/analysis/${gameId}`),
+    reanalyzeAll: () =>
+      request<{ message: string; games_queued: number }>('/analysis/reanalyze', { method: 'POST' }),
+    progress: () => request<AnalysisProgress>('/analysis/progress'),
   },
 
   patterns: {

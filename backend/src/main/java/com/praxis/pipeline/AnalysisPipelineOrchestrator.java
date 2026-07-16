@@ -22,12 +22,14 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.Comparator;
 import java.util.List;
 
 @Component
 public class AnalysisPipelineOrchestrator {
 
     private static final Logger log = LoggerFactory.getLogger(AnalysisPipelineOrchestrator.class);
+    private static final int MAX_OLLAMA_CALLS_PER_GAME = 3;
 
     private final PgnParserService pgnParserService;
     private final PositionEvaluator positionEvaluator;
@@ -37,6 +39,7 @@ public class AnalysisPipelineOrchestrator {
     private final MoveErrorRepository moveErrorRepository;
     private final PatternAggregator patternAggregator;
     private final AppProperties appProperties;
+    private final AnalysisProgressTracker progressTracker;
 
     public AnalysisPipelineOrchestrator(PgnParserService pgnParserService,
                                         PositionEvaluator positionEvaluator,
@@ -45,7 +48,8 @@ public class AnalysisPipelineOrchestrator {
                                         GameRepository gameRepository,
                                         MoveErrorRepository moveErrorRepository,
                                         PatternAggregator patternAggregator,
-                                        AppProperties appProperties) {
+                                        AppProperties appProperties,
+                                        AnalysisProgressTracker progressTracker) {
         this.pgnParserService = pgnParserService;
         this.positionEvaluator = positionEvaluator;
         this.candidateFilter = candidateFilter;
@@ -54,12 +58,14 @@ public class AnalysisPipelineOrchestrator {
         this.moveErrorRepository = moveErrorRepository;
         this.patternAggregator = patternAggregator;
         this.appProperties = appProperties;
+        this.progressTracker = progressTracker;
     }
 
     @Async("analysisExecutor")
     @Transactional
     public void analyzeGames(List<Game> games, String username) {
         log.info("Starting analysis pipeline for {} games (user: {})", games.size(), username);
+        progressTracker.start(games.size());
 
         for (Game game : games) {
             try {
@@ -68,11 +74,18 @@ public class AnalysisPipelineOrchestrator {
                 log.error("Pipeline failed for game {}: {}", game.getChessComId(), e.getMessage(), e);
                 game.setAnalysisStatus(AnalysisStatus.FAILED);
                 gameRepository.save(game);
+            } finally {
+                progressTracker.increment();
             }
         }
 
         log.info("Analysis pipeline complete. Running pattern aggregation...");
-        patternAggregator.recompute(username);
+        progressTracker.setPatternGenerating(true);
+        try {
+            patternAggregator.recompute(username);
+        } finally {
+            progressTracker.finish();
+        }
     }
 
     private void analyzeGame(Game game) {
@@ -80,7 +93,6 @@ public class AnalysisPipelineOrchestrator {
         game.setAnalysisStatus(AnalysisStatus.ANALYZING);
         gameRepository.save(game);
 
-        // STATE: PARSE_PGN
         ParsedGame parsedGame = pgnParserService.parse(
                 game.getId().toString(),
                 game.getRawPgn(),
@@ -93,25 +105,24 @@ public class AnalysisPipelineOrchestrator {
             return;
         }
 
-        // Update opening info from parsed PGN headers
         if (game.getOpeningEco() == null && !parsedGame.openingEco().isEmpty()) {
             game.setOpeningEco(parsedGame.openingEco());
             game.setOpeningName(parsedGame.openingName());
         }
 
-        // STATE: EVALUATE_POSITIONS
         List<Double> scores = positionEvaluator.evaluateAll(parsedGame.moves());
-
-        // STATE: IDENTIFY_CANDIDATE_MISTAKES
         List<CandidateMove> candidates = candidateFilter.filter(parsedGame, scores);
         log.debug("Found {} candidate mistakes in game {}", candidates.size(), game.getChessComId());
 
-        // STATE: OLLAMA_ANALYZE
-        for (CandidateMove candidate : candidates) {
-            persistMoveError(game, candidate, parsedGame.playerColor());
+        // Sort by swing descending; only call Ollama for the worst MAX_OLLAMA_CALLS_PER_GAME mistakes
+        List<CandidateMove> sorted = candidates.stream()
+                .sorted(Comparator.comparingDouble(CandidateMove::materialSwing).reversed())
+                .toList();
+
+        for (int i = 0; i < sorted.size(); i++) {
+            persistMoveError(game, sorted.get(i), parsedGame.playerColor(), i < MAX_OLLAMA_CALLS_PER_GAME);
         }
 
-        // STATE: PERSIST_RESULTS
         game.setAnalysisStatus(AnalysisStatus.ANALYZED);
         game.setAnalyzedAt(OffsetDateTime.now(ZoneOffset.UTC));
         gameRepository.save(game);
@@ -119,7 +130,7 @@ public class AnalysisPipelineOrchestrator {
         log.debug("Game {} analyzed successfully", game.getChessComId());
     }
 
-    private void persistMoveError(Game game, CandidateMove candidate, String playerColor) {
+    private void persistMoveError(Game game, CandidateMove candidate, String playerColor, boolean callOllama) {
         ParsedMove move = candidate.move();
         MoveError.MoveErrorBuilder builder = MoveError.builder()
                 .game(game)
@@ -130,23 +141,29 @@ public class AnalysisPipelineOrchestrator {
                 .gamePhase(candidate.phase())
                 .clockRemaining(move.clockRemainingSeconds());
 
-        try {
-            String prompt = PromptTemplates.moveAnalysis(
-                    move.fenBefore(), move.san(), playerColor,
-                    candidate.phase().name(), move.moveNumber());
+        if (callOllama) {
+            try {
+                String prompt = PromptTemplates.moveAnalysis(
+                        move.fenBefore(), move.san(), playerColor,
+                        candidate.phase().name(), move.moveNumber());
 
-            MoveAnalysisResult result = ollamaClient.analyze(prompt, MoveAnalysisResult.class);
+                MoveAnalysisResult result = ollamaClient.analyze(prompt, MoveAnalysisResult.class);
 
-            builder.betterMove(result.betterMove())
-                   .explanation(result.explanation())
-                   .severity(parseSeverity(result.severity()))
-                   .tacticalMotif(parseMotif(result.tacticalMotif()))
-                   .analysisFailed(false);
+                builder.betterMove(result.betterMove())
+                       .explanation(result.explanation())
+                       .severity(parseSeverity(result.severity()))
+                       .tacticalMotif(parseMotif(result.tacticalMotif()))
+                       .analysisFailed(false);
 
-        } catch (Exception e) {
-            log.warn("Ollama analysis failed for move {} in game {}: {}",
-                    move.moveNumber(), game.getChessComId(), e.getMessage());
-            builder.severity(Severity.BLUNDER)
+            } catch (Exception e) {
+                log.warn("Ollama analysis failed for move {} in game {}: {}",
+                        move.moveNumber(), game.getChessComId(), e.getMessage());
+                builder.severity(Severity.BLUNDER)
+                       .analysisFailed(true);
+            }
+        } else {
+            // Saved without Ollama explanation to preserve mistake count for patterns
+            builder.severity(Severity.MISTAKE)
                    .analysisFailed(true);
         }
 
@@ -168,15 +185,6 @@ public class AnalysisPipelineOrchestrator {
             return TacticalMotif.valueOf(raw.toUpperCase().replace(" ", "_"));
         } catch (IllegalArgumentException e) {
             return TacticalMotif.OTHER;
-        }
-    }
-
-    private GamePhase parsePhase(String raw) {
-        if (raw == null) return GamePhase.MIDDLEGAME;
-        try {
-            return GamePhase.valueOf(raw.toUpperCase());
-        } catch (IllegalArgumentException e) {
-            return GamePhase.MIDDLEGAME;
         }
     }
 }
