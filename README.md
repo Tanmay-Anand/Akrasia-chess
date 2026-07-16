@@ -4,7 +4,7 @@
 
 A personal, fully offline chess analytics and improvement system. Connect your Chess.com account, let the AI analyze your games, identify your recurring weaknesses, and generate a training plan tailored to your actual play — not generic advice.
 
-Built with **Java 21 + Spring Boot**, **PostgreSQL**, **Ollama (local LLM)**, and **React**. No cloud AI. No deployment. Runs entirely on your machine.
+Built with **Java 26 + Spring Boot 3.5**, **PostgreSQL**, **Stockfish**, **Ollama (local LLM)**, and **React**. No cloud AI. No deployment. Runs entirely on your machine.
 
 ---
 
@@ -12,43 +12,96 @@ Built with **Java 21 + Spring Boot**, **PostgreSQL**, **Ollama (local LLM)**, an
 
 ### Dashboard
 
-Your chess at a glance. Rating trend over time, win/loss/draw breakdown, opening distribution across your recent games, and accuracy trends — all derived from your Chess.com data.
+Your chess at a glance — rating trend over time, win/loss/draw breakdown, opening distribution, and accuracy stats across your recent games.
 
-### Tab 1 — Game Analysis
+### Game Analysis
 
-Select any of your fetched games and get move-by-move AI coaching. Every mistake is flagged with its severity (blunder, inaccuracy, missed opportunity), the better move, and a plain-English explanation of _why_ — not just what.
+Select any fetched game and get move-by-move coaching. Every mistake is flagged with its severity (blunder, mistake, inaccuracy), the better move, and a plain-English explanation of _why_ — powered by Stockfish evaluation + local LLM.
 
-### Tab 2 — Pattern Report
+### Pattern Report
 
 Cross-game aggregation. Instead of per-game feedback, this tells you what _keeps_ happening: which move range you blunder in most, which tactical motifs catch you repeatedly, and where your opening preparation breaks down.
 
-### Tab 3 — Training Plan
+### Training Plan
 
-The AI reads your Tab 1 + Tab 2 findings and generates a prioritized, concrete improvement list: specific openings to drill, tactical patterns to study, and positional habits to fix. Regenerates every time you sync new games.
+The AI reads your Pattern Report and generates a prioritized, concrete improvement list — specific openings to drill, tactical patterns to study, positional habits to fix. Regenerates on demand.
 
 ---
 
 ## Tech Stack
 
-| Layer       | Technology                                 |
-| ----------- | ------------------------------------------ |
-| Backend     | Java 21, Spring Boot 3                     |
-| AI / LLM    | Ollama (`qwen2.5:14b` Q4_K_M)              |
-| Database    | PostgreSQL                                 |
-| PGN Parsing | `bhlangonijr/chess-library`                |
-| Data Source | Chess.com Public API (free, no key needed) |
-| Frontend    | React + TypeScript                         |
-| Charts      | Recharts                                   |
-| Build       | Maven                                      |
+| Layer        | Technology                  | Version           |
+| ------------ | --------------------------- | ----------------- |
+| Backend      | Java + Spring Boot          | Java 26, SB 3.5.3 |
+| Chess engine | Stockfish (AVX2 binary)     | —                 |
+| Local LLM    | Ollama + `qwen2.5:7b`       | —                 |
+| Database     | PostgreSQL (Docker)         | 17                |
+| PGN parsing  | chesslib (`bhlangonijr`)    | 1.3.3             |
+| Data source  | Chess.com Public API        | free, no key      |
+| Frontend     | React + TypeScript + Vite   | React 18          |
+| Server state | TanStack Query              | v5                |
+| Charts       | Recharts                    | —                 |
+| Chess board  | react-chessboard + chess.js | —                 |
+
+---
+
+## How It All Connects
+
+```mermaid
+flowchart TD
+    YOU([You]) -->|"① Sync Now"| CC[Chess.com API\nfetch PGN games]
+    CC -->|store raw games| DB[(PostgreSQL)]
+
+    DB -->|"② Re-Analyze All"| SF[Stockfish\nevaluate every position\nfind score drops]
+    SF -->|top mistake candidates| OL[Ollama — qwen2.5:7b\nexplain why it was a mistake\nwhat to play instead]
+    OL -->|save MoveErrors| DB
+
+    DB -->|"after all games done"| PA[Pattern Aggregator\ngroup by phase · motif · move range\nask LLM for systemic weaknesses]
+    PA -->|save PlayerPattern| DB
+
+    DB -->|"③ Explore"| DASH[Dashboard\nrating · win rates · openings]
+    DB --> GA[Game Analysis\nchessboard · move arrows · explanations]
+    DB --> PR[Pattern Report\nyour recurring weaknesses]
+    DB --> TP[Training Plan\nprioritized improvement list]
+```
+
+> For low-level internals : thread model, data model, AI reasoning flow, design decisions, see [ARCHITECTURE.md](ARCHITECTURE.md)
+
+---
+
+## How Analysis Works
+
+Analysis runs in three stages, entirely offline:
+
+**Stage 1 — Stockfish evaluates every position**
+Each move's FEN is sent to a local Stockfish subprocess (depth 18). Centipawn score drops ≥ 1.0 pawn are flagged as mistake candidates (max 8 per game).
+
+**Stage 2 — Ollama explains the worst mistakes**
+The top 3 candidates (by severity) are sent to `qwen2.5:7b` via Ollama with a structured JSON prompt. The LLM explains _why_ the move was a mistake and what to play instead.
+
+```json
+{
+  "severity": "BLUNDER",
+  "better_move": "d5",
+  "explanation": "Allows Bxf7+ winning the exchange. d5 contests the center and maintains equality.",
+  "tactical_motif": "HANGING_PIECE"
+}
+```
+
+**Stage 3 — Pattern aggregation**
+After all games are analyzed, error statistics (by phase, move range, motif, opening) are compiled and sent to the LLM once to identify systemic weaknesses across your full game library.
+
+Ollama is called with `"format": "json"` (grammar-constrained mode) — output is always parseable, never a wall of text.
 
 ---
 
 ## Prerequisites
 
-- Java 21+
-- PostgreSQL 15+
-- [Ollama](https://ollama.com) installed and running
-- Node.js 18+ (frontend)
+- **Java 26+** (JDK 26)
+- **Docker** (for PostgreSQL)
+- **[Ollama](https://ollama.com)** installed and running
+- **Stockfish** binary (AVX2 build recommended)
+- **Node.js 18+** (frontend)
 
 ---
 
@@ -61,29 +114,27 @@ git clone https://github.com/Tanmay-Anand/praxis-chess.git
 cd praxis-chess
 ```
 
-### 2. Pull the LLM model
+### 2. Start PostgreSQL via Docker
 
 ```bash
-ollama pull qwen2.5:14b
+cd backend/infra/dev-postgresql
+docker compose up -d
 ```
 
-> If your GPU struggles, try `ollama pull llama3.2:3b` as a lighter fallback.
+### 3. Pull the LLM model
 
-### 3. Set up PostgreSQL
-
-```sql
-CREATE DATABASE praxis_chess;
-CREATE USER praxis_chess_user WITH PASSWORD 'your_password';
-GRANT ALL PRIVILEGES ON DATABASE praxis_chess TO praxis_chess_user;
+```bash
+ollama pull qwen2.5:7b
 ```
 
 ### 4. Configure the application
 
-Copy the example config and fill in your values:
-
 ```bash
-cp src/main/resources/application.example.yml src/main/resources/application.yml
+cp backend/src/main/resources/application.example.yml \
+   backend/src/main/resources/application.yml
 ```
+
+Edit `application.yml` with your values:
 
 ```yaml
 spring:
@@ -95,15 +146,19 @@ spring:
 praxis-chess:
   ollama:
     base-url: http://localhost:11434
-    model: qwen2.5:14b
+    model: qwen2.5:7b
   chess-com:
     username: your_chess_com_username
+  stockfish:
+    path: /path/to/stockfish
 ```
 
 ### 5. Run the backend
 
 ```bash
+cd backend
 ./mvnw spring-boot:run
+# Runs on http://localhost:8086
 ```
 
 ### 6. Run the frontend
@@ -112,34 +167,8 @@ praxis-chess:
 cd frontend
 npm install
 npm run dev
+# Opens on http://localhost:5173
 ```
-
-Open `http://localhost:5173` in your browser.
-
----
-
-## How Analysis Works
-
-The AI layer uses a **structured output pipeline** — Ollama never returns a wall of text. Every analysis call returns a typed JSON schema that the backend processes deterministically:
-
-```json
-{
-  "mistakes": [
-    {
-      "move_number": 14,
-      "move_played": "Nf6??",
-      "better_move": "d5",
-      "severity": "BLUNDER",
-      "explanation": "Allows Bxf7+ winning the exchange immediately. d5 instead contests the center and maintains equality."
-    }
-  ],
-  "opening_deviation_at_move": 7,
-  "patterns_detected": ["BACK_RANK_WEAKNESS", "PREMATURE_ATTACK"],
-  "phase_weakness": "MIDDLEGAME"
-}
-```
-
-This means results are consistent, parseable, and storable — not dependent on how the LLM decides to format its response on a given day.
 
 ---
 
@@ -147,42 +176,46 @@ This means results are consistent, parseable, and storable — not dependent on 
 
 ```
 praxis-chess/
-├── src/
-│   └── main/
-│       ├── java/com/praxis/
-│       │   ├── api/              # REST controllers
-│       │   ├── domain/           # Domain models and enums
-│       │   ├── service/
-│       │   │   ├── analysis/     # PGN parsing, position evaluation
-│       │   │   ├── ai/           # Ollama orchestration, prompt templates
-│       │   │   └── chesscom/  # Chess.com API client
-│       │   ├── repository/       # JPA repositories
-│       │   └── pipeline/         # Agentic analysis pipeline
-│       └── resources/
-│           ├── application.yml
-│           └── db/migration/     # Flyway migrations
+├── backend/
+│   ├── src/main/java/com/praxis/
+│   │   ├── api/                    # REST controllers
+│   │   ├── config/                 # AppProperties, async executor config
+│   │   ├── domain/                 # JPA entities + enums
+│   │   ├── dto/                    # Request / response DTOs
+│   │   ├── pipeline/               # AnalysisPipelineOrchestrator + ProgressTracker
+│   │   ├── repository/             # Spring Data JPA repositories
+│   │   └── service/
+│   │       ├── ai/                 # OllamaAnalysisClient, PromptTemplates
+│   │       ├── analysis/           # PGN parser, Stockfish evaluator, mistake filter
+│   │       └── chesscom/           # Chess.com API client, SyncService, AsyncSyncService
+│   └── src/main/resources/
+│       ├── application.example.yml # Safe template (committed)
+│       └── application.yml         # Your secrets (gitignored)
 ├── frontend/
-│   ├── src/
-│   │   ├── components/
-│   │   ├── pages/
-│   │   └── hooks/
-│   └── package.json
-└── README.md
+│   └── src/
+│       ├── api/                    # API client + TypeScript types
+│       ├── components/             # SyncStatusBanner, ChessBoard, charts
+│       ├── hooks/                  # useAnalysisProgress, useSyncStatus
+│       └── pages/                  # Dashboard, GameList, GameAnalysis, PatternReport, TrainingPlan
+└── ARCHITECTURE.md                 # Full design decisions + Mermaid diagrams
 ```
 
 ---
 
 ## Roadmap
 
-- [ ] Chess.com API integration + game sync
-- [ ] PGN parsing pipeline
-- [ ] Structured Ollama analysis engine
-- [ ] Game Analysis tab (Tab 1)
-- [ ] Pattern aggregation engine (Tab 2)
-- [ ] Training plan generator (Tab 3)
-- [ ] Dashboard with charts
-- [ ] Opening drill integration (link to Chess Opening Trainer)
-- [ ] Fine-tuned model on Lichess annotated game dataset
+- [x] Chess.com API integration + game sync
+- [x] PGN parsing pipeline (chesslib)
+- [x] Stockfish position evaluation
+- [x] Structured Ollama analysis engine (JSON mode)
+- [x] Async sync + live progress banner with ETA
+- [x] Game Analysis page (chessboard + move arrows)
+- [x] Pattern aggregation engine
+- [x] Training plan generator
+- [x] Dashboard with rating chart + opening breakdown
+- [ ] Per-game transaction commits (resume after JVM kill)
+- [ ] Opening drill integration
+- [ ] Fine-tuned smaller model for faster inference
 
 ---
 
