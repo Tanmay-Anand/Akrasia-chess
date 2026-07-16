@@ -25,6 +25,7 @@
 15. [Non-Functional Considerations](#non-functional-considerations)
 16. [Future Considerations](#future-considerations)
 17. [Hardware Reality](#hardware-reality)
+18. [How It All Connects (High Level)](#how-it-all-connects-high-level)
 
 ---
 
@@ -882,4 +883,26 @@ sequenceDiagram
     DB-->>BE: stats
     BE-->>FE: dashboard data
     FE->>User: updated Dashboard
+```
+
+---
+
+## How It All Connects (High Level)
+
+```mermaid
+flowchart TD
+    YOU([You]) -->|"① Sync Now"| CC[Chess.com API\nfetch PGN games]
+    CC -->|store raw games| DB[(PostgreSQL)]
+
+    DB -->|"② Re-Analyze All"| SF[Stockfish\nevaluate every position\nfind score drops]
+    SF -->|top mistake candidates| OL[Ollama — qwen2.5:7b\nexplain why it was a mistake\nwhat to play instead]
+    OL -->|save MoveErrors| DB
+
+    DB -->|"after all games done"| PA[Pattern Aggregator\ngroup by phase · motif · move range\nask LLM for systemic weaknesses]
+    PA -->|save PlayerPattern| DB
+
+    DB -->|"③ Explore"| DASH[Dashboard\nrating · win rates · openings]
+    DB --> GA[Game Analysis\nchessboard · move arrows · explanations]
+    DB --> PR[Pattern Report\nyour recurring weaknesses]
+    DB --> TP[Training Plan\nprioritized improvement list]
 ```
