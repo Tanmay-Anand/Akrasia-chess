@@ -1,12 +1,19 @@
 import { Chessboard } from 'react-chessboard'
 import { Chess } from 'chess.js'
 
+interface Arrow {
+  from: string
+  to: string
+  color: string
+}
+
 interface Props {
   fen?: string
   playerColor?: string
+  arrows?: Arrow[]
 }
 
-export function ChessBoard({ fen, playerColor = 'white' }: Props) {
+export function ChessBoard({ fen, playerColor = 'white', arrows }: Props) {
   const safeFen = (() => {
     if (!fen) return undefined
     try {
@@ -17,6 +24,10 @@ export function ChessBoard({ fen, playerColor = 'white' }: Props) {
     }
   })()
 
+  // react-chessboard's Arrow type expects chess Square literals; cast via unknown
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const customArrows: any[] = arrows ? arrows.map(a => [a.from, a.to, a.color]) : []
+
   return (
     <Chessboard
       position={safeFen}
@@ -25,6 +36,8 @@ export function ChessBoard({ fen, playerColor = 'white' }: Props) {
       customDarkSquareStyle={{ backgroundColor: '#3d5a80' }}
       customLightSquareStyle={{ backgroundColor: '#98c1d9' }}
       boardWidth={360}
+      customArrows={customArrows}
+      customArrowColor="rgba(255,0,0,0.8)"
     />
   )
 }

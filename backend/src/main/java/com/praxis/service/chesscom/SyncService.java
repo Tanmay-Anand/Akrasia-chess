@@ -5,6 +5,7 @@ import com.praxis.domain.Game;
 import com.praxis.domain.SyncHistory;
 import com.praxis.domain.enums.AnalysisStatus;
 import com.praxis.pipeline.AnalysisPipelineOrchestrator;
+import com.praxis.pipeline.AnalysisProgressTracker;
 import com.praxis.repository.GameRepository;
 import com.praxis.repository.SyncHistoryRepository;
 import com.praxis.service.chesscom.dto.ChessComGame;
@@ -31,10 +32,12 @@ public class SyncService {
     private final GameRepository gameRepository;
     private final SyncHistoryRepository syncHistoryRepository;
     private final AnalysisPipelineOrchestrator pipelineOrchestrator;
+    private final AnalysisProgressTracker progressTracker;
     private final AppProperties appProperties;
 
     // In-memory sync state
     private volatile boolean syncing = false;
+    private volatile boolean syncQueued = false;
     private final AtomicInteger gamesFetched  = new AtomicInteger(0);
     private final AtomicInteger gamesQueued   = new AtomicInteger(0);
     private final AtomicReference<String> lastSyncedAt = new AtomicReference<>("Never");
@@ -43,11 +46,13 @@ public class SyncService {
                        GameRepository gameRepository,
                        SyncHistoryRepository syncHistoryRepository,
                        AnalysisPipelineOrchestrator pipelineOrchestrator,
+                       AnalysisProgressTracker progressTracker,
                        AppProperties appProperties) {
         this.apiClient = apiClient;
         this.gameRepository = gameRepository;
         this.syncHistoryRepository = syncHistoryRepository;
         this.pipelineOrchestrator = pipelineOrchestrator;
+        this.progressTracker = progressTracker;
         this.appProperties = appProperties;
     }
 
@@ -59,6 +64,7 @@ public class SyncService {
         }
 
         String effectiveUsername = username != null ? username : appProperties.chessCom().username();
+        syncQueued = false;
         syncing = true;
         gamesFetched.set(0);
         gamesQueued.set(0);
@@ -78,7 +84,21 @@ public class SyncService {
                 int persisted = 0;
 
                 for (ChessComGame cg : fetched) {
-                    if (cg.uuid() == null || gameRepository.existsByChessComId(cg.uuid())) continue;
+                    if (cg.uuid() == null) continue;
+                    if (gameRepository.existsByChessComId(cg.uuid())) {
+                        // Backfill accuracy for games synced before the accuracy field was added
+                        gameRepository.findByChessComId(cg.uuid()).ifPresent(existing -> {
+                            if (existing.getAccuracy() == null) {
+                                boolean piw = effectiveUsername.equalsIgnoreCase(cg.white().username());
+                                Double acc = piw ? cg.white().accuracy() : cg.black().accuracy();
+                                if (acc != null) {
+                                    existing.setAccuracy(acc);
+                                    gameRepository.save(existing);
+                                }
+                            }
+                        });
+                        continue;
+                    }
                     Game game = toEntity(cg, effectiveUsername);
                     gameRepository.save(game);
                     newGames.add(game);
@@ -101,6 +121,7 @@ public class SyncService {
             gamesQueued.set(newGames.size());
 
             if (!newGames.isEmpty()) {
+                progressTracker.setQueued(true);
                 pipelineOrchestrator.analyzeGames(newGames, effectiveUsername);
             }
 
@@ -111,12 +132,32 @@ public class SyncService {
     }
 
     public SyncStatus getStatus() {
-        long pending  = gameRepository.countByUsernameAndAnalysisStatus(
-                appProperties.chessCom().username(), AnalysisStatus.PENDING);
-        long analyzed = gameRepository.countByUsernameAndAnalysisStatus(
-                appProperties.chessCom().username(), AnalysisStatus.ANALYZED);
-        return new SyncStatus(syncing ? "SYNCING" : (pending > 0 ? "ANALYZING" : "IDLE"),
-                gamesFetched.get(), (int) analyzed, (int) pending, lastSyncedAt.get());
+        String username = appProperties.chessCom().username();
+        long pending  = gameRepository.countByUsernameAndAnalysisStatus(username, AnalysisStatus.PENDING);
+        long analyzed = gameRepository.countByUsernameAndAnalysisStatus(username, AnalysisStatus.ANALYZED);
+        // Always read from DB so it survives server restarts
+        String lastSync = syncHistoryRepository
+                .findTopByUsernameOrderBySyncedAtDesc(username)
+                .map(sh -> sh.getSyncedAt().toString())
+                .orElse("Never");
+        return new SyncStatus((syncing || syncQueued) ? "SYNCING" : (pending > 0 ? "ANALYZING" : "IDLE"),
+                gamesFetched.get(), (int) analyzed, (int) pending, lastSync);
+    }
+
+    public void enqueueSyncFlag() { this.syncQueued = true; }
+
+    public void clearSyncHistory(String username, int months) {
+        YearMonth current = YearMonth.now();
+        for (int i = 0; i < months; i++) {
+            YearMonth ym = current.minusMonths(i);
+            syncHistoryRepository.deleteByUsernameAndYearAndMonth(username, ym.getYear(), ym.getMonthValue());
+        }
+    }
+
+    public int forceResync(String username, int months) {
+        String effectiveUsername = username != null ? username : appProperties.chessCom().username();
+        clearSyncHistory(effectiveUsername, months);
+        return sync(username, months);
     }
 
     private Game toEntity(ChessComGame cg, String username) {
@@ -125,6 +166,8 @@ public class SyncService {
         String rawResult = playerIsWhite ? cg.white().result() : cg.black().result();
         String result = normalizeResult(rawResult);
         OffsetDateTime playedAt = OffsetDateTime.ofInstant(Instant.ofEpochSecond(cg.endTime()), ZoneOffset.UTC);
+
+        Double accuracy = playerIsWhite ? cg.white().accuracy() : cg.black().accuracy();
 
         return Game.builder()
                 .chessComId(cg.uuid())
@@ -137,6 +180,7 @@ public class SyncService {
                 .rawPgn(cg.pgn())
                 .whiteRating(cg.white().rating())
                 .blackRating(cg.black().rating())
+                .accuracy(accuracy)
                 .analysisStatus(AnalysisStatus.PENDING)
                 .build();
     }

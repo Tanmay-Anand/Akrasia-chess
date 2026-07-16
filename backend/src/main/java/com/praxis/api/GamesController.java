@@ -6,37 +6,51 @@ import com.praxis.domain.enums.AnalysisStatus;
 import com.praxis.dto.GameSummaryDto;
 import com.praxis.pipeline.AnalysisPipelineOrchestrator;
 import com.praxis.repository.GameRepository;
+import com.praxis.repository.MoveErrorRepository;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/games")
 public class GamesController {
 
     private final GameRepository gameRepository;
+    private final MoveErrorRepository moveErrorRepository;
     private final AnalysisPipelineOrchestrator orchestrator;
     private final AppProperties appProperties;
 
     public GamesController(GameRepository gameRepository,
+                           MoveErrorRepository moveErrorRepository,
                            AnalysisPipelineOrchestrator orchestrator,
                            AppProperties appProperties) {
         this.gameRepository = gameRepository;
+        this.moveErrorRepository = moveErrorRepository;
         this.orchestrator = orchestrator;
         this.appProperties = appProperties;
     }
 
     @GetMapping
     public ResponseEntity<List<GameSummaryDto>> listGames() {
-        List<GameSummaryDto> games = gameRepository
-                .findByUsernameOrderByPlayedAtDesc(appProperties.chessCom().username())
+        String username = appProperties.chessCom().username();
+        List<Game> games = gameRepository.findByUsernameOrderByPlayedAtDesc(username);
+
+        Map<UUID, Integer> mistakeCounts = moveErrorRepository
+                .countSuccessfulPerGameByUsername(username)
                 .stream()
-                .map(GameSummaryDto::from)
+                .collect(Collectors.toMap(
+                        row -> (UUID) row[0],
+                        row -> ((Long) row[1]).intValue()));
+
+        List<GameSummaryDto> dtos = games.stream()
+                .map(g -> GameSummaryDto.from(g, mistakeCounts.getOrDefault(g.getId(), 0)))
                 .toList();
-        return ResponseEntity.ok(games);
+
+        return ResponseEntity.ok(dtos);
     }
 
     @GetMapping("/{id}")

@@ -27,7 +27,7 @@ public class OllamaAnalysisClient {
     }
 
     public <T> T analyze(String prompt, Class<T> responseType) {
-        OllamaRequest request = new OllamaRequest(model, prompt, false, "json");
+        OllamaRequest request = new OllamaRequest(model, prompt, false, "json", 200);
 
         OllamaGenerateResponse raw = restClient.post()
                 .uri("/api/generate")

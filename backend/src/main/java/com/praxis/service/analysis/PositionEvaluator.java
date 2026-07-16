@@ -11,31 +11,40 @@ import java.util.List;
 @Component
 public class PositionEvaluator {
 
-    // Returns material score from White's perspective (positive = White advantage)
-    public double evaluate(String fen) {
-        Board board = new Board();
-        board.loadFromFen(fen);
+    private final StockfishService stockfish;
 
-        double white = materialScore(board, Side.WHITE);
-        double black = materialScore(board, Side.BLACK);
-        return white - black;
+    public PositionEvaluator(StockfishService stockfish) {
+        this.stockfish = stockfish;
     }
 
     public List<Double> evaluateAll(List<ParsedMove> moves) {
         List<Double> scores = new ArrayList<>();
         for (ParsedMove move : moves) {
-            scores.add(evaluate(move.fenAfter()));
+            if (move.evalScore() != null) {
+                // Highest priority: Chess.com %eval annotation
+                scores.add(move.evalScore());
+            } else if (stockfish.isAvailable()) {
+                // Second: Stockfish engine eval (accurate, catches all mistake types)
+                Double sfScore = stockfish.evaluate(move.fenAfter());
+                scores.add(sfScore != null ? sfScore : material(move.fenAfter()));
+            } else {
+                // Fallback: material count (only catches immediate piece drops)
+                scores.add(material(move.fenAfter()));
+            }
         }
         return scores;
     }
 
-    // Material swing experienced by the player who made the move at index i.
-    // Positive means the player gained material, negative means they lost material.
+    // Used as fallback when Stockfish is not available
+    public double material(String fen) {
+        Board board = new Board();
+        board.loadFromFen(fen);
+        return materialScore(board, Side.WHITE) - materialScore(board, Side.BLACK);
+    }
+
     public double swing(List<Double> scores, int index, boolean playerIsWhite) {
         if (index == 0) return 0;
-        double before = scores.get(index - 1);
-        double after  = scores.get(index);
-        double delta  = after - before;
+        double delta = scores.get(index) - scores.get(index - 1);
         return playerIsWhite ? delta : -delta;
     }
 

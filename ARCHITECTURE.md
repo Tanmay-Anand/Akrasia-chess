@@ -1,0 +1,885 @@
+# Praxis Chess — Architecture & Design
+
+> A personal chess improvement platform that syncs games from Chess.com, analyzes mistakes
+> using Stockfish + a local LLM, identifies patterns across your portfolio, and generates
+> a personalized training plan. Everything runs locally — no cloud AI calls.
+
+---
+
+## Table of Contents
+
+1. [Design Principles](#design-principles)
+2. [System Overview](#system-overview)
+3. [Tech Stack](#tech-stack)
+4. [High-Level Architecture](#high-level-architecture)
+5. [Data Model](#data-model)
+6. [Sync Pipeline](#sync-pipeline)
+7. [Analysis Pipeline](#analysis-pipeline)
+8. [AI Reasoning Flow](#ai-reasoning-flow)
+9. [Pattern Aggregation](#pattern-aggregation)
+10. [Frontend Architecture](#frontend-architecture)
+11. [Backend Architecture](#backend-architecture)
+12. [Progress Tracking](#progress-tracking)
+13. [Key Design Decisions](#key-design-decisions)
+14. [REST API Reference](#rest-api-reference)
+15. [Non-Functional Considerations](#non-functional-considerations)
+16. [Future Considerations](#future-considerations)
+17. [Hardware Reality](#hardware-reality)
+
+---
+
+## Design Principles
+
+These principles guided every major decision in the system design.
+
+### 1. Structured outputs over free text
+The LLM is always asked for strict JSON with a predefined schema. Free-form prose
+would require parsing heuristics that break unpredictably. `OllamaAnalysisClient`
+sets `"format": "json"` at the API level (Ollama JSON mode) and also strips markdown
+code fences in case the model wraps its output anyway.
+
+### 2. LLM analyzes; it does not orchestrate
+The LLM receives data and returns an analysis. It never decides what to do next,
+calls tools, or drives any control flow. Stockfish determines *which* positions to
+analyze; the LLM only explains *why* a move was a mistake.
+
+### 3. Offline by design
+No cloud AI, no external analysis APIs. Ollama runs locally, Stockfish is a local
+binary. The only external call is the Chess.com public REST API to fetch PGN data.
+The system works with no internet connection after initial game sync.
+
+### 4. Aggregate, don't just report
+The system doesn't stop at identifying individual mistakes. It aggregates all errors
+across an entire game library into statistical distributions (by phase, move range,
+motif, opening) and asks the LLM to identify systemic patterns — weaknesses that
+appear across many games, not just a single bad game.
+
+### 5. Persistence-first
+Every intermediate result (games, move errors, patterns, training plan) is persisted
+to PostgreSQL. Analysis is expensive (35–50 min for 74 games); the results must
+survive a server restart. The one current exception is the in-memory progress tracker,
+which is intentionally ephemeral to avoid per-update DB writes.
+
+---
+
+## System Overview
+
+Praxis has three independent data pipelines that run sequentially:
+
+```
+Chess.com API  →  Sync Pipeline  →  Analysis Pipeline  →  Pattern Aggregation
+                    (fetch PGN)      (Stockfish + LLM)      (LLM summary + plan)
+```
+
+Each pipeline can be triggered manually. Results are stored in PostgreSQL and served
+to the React frontend via a Spring Boot REST API.
+
+---
+
+## Tech Stack
+
+| Layer | Technology | Version |
+|---|---|---|
+| Frontend | React + TypeScript + Vite | React 18 |
+| Server state | TanStack Query | v5 |
+| Chess rendering | react-chessboard | latest |
+| Chess logic (FE) | chess.js | latest |
+| Backend | Spring Boot | 3.5.3 |
+| Language | Java | 26 |
+| ORM | Hibernate / Spring Data JPA | 6.6 |
+| Database | PostgreSQL (Docker) | 17 |
+| Chess engine | Stockfish | AVX2 binary |
+| Chess parsing (BE) | chesslib | 1.3.3 |
+| Local LLM runtime | Ollama | latest |
+| LLM model | qwen2.5:7b | 7B params |
+| Async executor | Spring `@Async` + `ThreadPoolTaskExecutor` | — |
+
+---
+
+## High-Level Architecture
+
+```mermaid
+graph TB
+    subgraph Browser
+        UI[React + Vite\nport 5173]
+    end
+
+    subgraph Backend["Backend — Spring Boot :8086"]
+        SC[SyncController]
+        AC[AnalysisController]
+        DC[DashboardController]
+        GC[GamesController]
+        ASS[AsyncSyncService]
+        SS[SyncService]
+        APO[AnalysisPipelineOrchestrator]
+        PA[PatternAggregator]
+        APT[AnalysisProgressTracker]
+        PS[PgnParserService]
+        PE[PositionEvaluator]
+        MCF[MistakeCandidateFilter]
+        OAC[OllamaAnalysisClient]
+    end
+
+    subgraph Storage
+        PG[(PostgreSQL\nDocker :5432)]
+    end
+
+    subgraph Local["Local AI"]
+        SF[Stockfish\nAVX2 binary]
+        OL[Ollama\n:11434]
+        QW[qwen2.5:7b]
+    end
+
+    subgraph External
+        CC[Chess.com\nPublic API]
+    end
+
+    UI -- "REST /api/*" --> SC & AC & DC & GC
+    SC --> ASS --> SS
+    SS -- "new games" --> APO
+    AC -- "reanalyze" --> APO
+    APO --> PS --> PE --> MCF --> OAC
+    PE -- "FEN positions" --> SF
+    OAC -- "HTTP POST" --> OL --> QW
+    APO --> PA --> OAC
+    SS & APO & PA --> PG
+    DC & GC & AC -- "SELECT" --> PG
+    SS --> CC
+    APT -. "volatile state" .-> AC
+```
+
+---
+
+## Data Model
+
+```mermaid
+erDiagram
+    GAME {
+        uuid id PK
+        string chess_com_id UK
+        string username
+        timestamp played_at
+        string time_class
+        string time_control
+        string player_color
+        string result
+        text raw_pgn
+        string opening_eco
+        string opening_name
+        int white_rating
+        int black_rating
+        double accuracy
+        enum analysis_status
+        timestamp analyzed_at
+    }
+
+    MOVE_ERROR {
+        uuid id PK
+        uuid game_id FK
+        int move_number
+        string player_color
+        string move_played
+        string better_move
+        string fen_position
+        enum severity
+        enum tactical_motif
+        text explanation
+        enum game_phase
+        int clock_remaining
+        bool analysis_failed
+    }
+
+    SYNC_HISTORY {
+        uuid id PK
+        string username
+        int year
+        int month
+        int games_fetched
+        timestamp synced_at
+    }
+
+    PLAYER_PATTERN {
+        uuid id PK
+        string username
+        int games_analyzed
+        timestamp computed_at
+        int mistakes_moves1to10
+        int mistakes_moves11to20
+        int mistakes_moves21to30
+        int mistakes_moves31_plus
+        int mistakes_opening
+        int mistakes_middlegame
+        int mistakes_endgame
+        json motif_frequency
+        json opening_accuracy
+        string primary_weakness
+        string secondary_weakness
+        string tertiary_weakness
+        string critical_move_range
+        string dominant_motif
+        string opening_assessment
+    }
+
+    TRAINING_PLAN {
+        uuid id PK
+        string username
+        timestamp generated_at
+        int based_on_games
+        json plan_json
+    }
+
+    GAME ||--o{ MOVE_ERROR : "has"
+    GAME }o--|| SYNC_HISTORY : "synced via"
+```
+
+**Key database indexes:**
+
+```sql
+-- Query performance for the most frequent access patterns
+CREATE INDEX idx_games_username          ON games(username);
+CREATE INDEX idx_games_analysis_status  ON games(username, analysis_status);
+CREATE INDEX idx_move_errors_game_id    ON move_errors(game_id);
+CREATE INDEX idx_move_errors_severity   ON move_errors(severity);
+CREATE INDEX idx_move_errors_motif      ON move_errors(tactical_motif);
+CREATE INDEX idx_player_patterns_user   ON player_patterns(username);
+```
+
+**Analysis status lifecycle:**
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING : game synced from Chess.com
+    PENDING --> ANALYZING : pipeline picks up game
+    ANALYZING --> ANALYZED : all moves processed
+    ANALYZING --> FAILED : parse error / no moves
+    FAILED --> PENDING : Re-Analyze All clicked
+    ANALYZED --> PENDING : Re-Analyze All clicked
+```
+
+---
+
+## Sync Pipeline
+
+Triggered by **Sync Now** (new months only) or **Re-Sync** (forces re-check of last 3 months).
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant FE as React Frontend
+    participant SC as SyncController
+    participant ASS as AsyncSyncService
+    participant SS as SyncService
+    participant SH as SyncHistoryRepo
+    participant CC as Chess.com API
+    participant DB as PostgreSQL
+    participant APO as AnalysisPipeline
+
+    User->>FE: clicks "Sync Now"
+    FE->>SC: POST /api/sync
+    SC->>SS: enqueueSyncFlag()
+    SC->>ASS: syncAsync() [@Async]
+    SC-->>FE: 202 Accepted (instant)
+
+    Note over FE: banner shows "Fetching games..."
+
+    ASS->>SS: sync(username, months)
+    SS->>SS: syncing = true
+
+    loop for each month (e.g. 3 months)
+        SS->>SH: existsByUsernameAndYearAndMonth?
+        alt month already synced
+            SH-->>SS: true → skip
+        else not synced
+            SS->>CC: GET /player/{user}/games/{year}/{month}
+            CC-->>SS: List[ChessComGame] JSON
+            loop for each game
+                SS->>DB: existsByChessComId?
+                alt game already in DB
+                    SS->>DB: backfill accuracy if missing
+                else new game
+                    SS->>DB: save Game (status=PENDING)
+                end
+            end
+            SS->>DB: save SyncHistory record
+        end
+    end
+
+    alt new games found
+        SS->>APO: analyzeGames(newGames) [@Async queued]
+    end
+
+    SS->>SS: syncing = false
+```
+
+**Re-Sync** additionally calls `clearSyncHistory()` before `sync()`, forcing all months
+to be re-fetched from Chess.com regardless of prior sync history. Only games with a new
+`chess_com_id` (not already in the DB) are inserted.
+
+### Chess.com API Details
+
+| Endpoint | Used for |
+|---|---|
+| `GET https://api.chess.com/pub/player/{username}/games/{year}/{month}` | Fetch all games for a calendar month |
+| `GET https://api.chess.com/pub/player/{username}/stats` | Player rating history (used by Dashboard) |
+
+**Important constraints:**
+- A `User-Agent` header is required on every request; Chess.com returns 403 without it.
+- Requests must be made serially — parallel requests trigger 429 rate limiting.
+- The API returns HTTP 304 Not Modified if the month hasn't changed since the last fetch;
+  the `SyncHistory` table's year/month deduplication makes this largely a non-issue.
+
+---
+
+## Analysis Pipeline
+
+The core pipeline. Runs asynchronously on a single-threaded executor so Stockfish and
+Ollama are never called concurrently.
+
+```mermaid
+flowchart TD
+    START([analyzeGames called\nwith List of Games]) --> TRACK[progressTracker.start\nclear queued flag]
+    TRACK --> LOOP{for each game}
+
+    LOOP --> PARSE[PgnParserService\nParse raw PGN via chesslib\nExtract moves + FEN + clock]
+    PARSE --> EMPTY{moves empty?}
+    EMPTY -- yes --> FAILED[status = FAILED\nsave to DB]
+    FAILED --> NEXT
+
+    EMPTY -- no --> STOCK[PositionEvaluator\nSend each FEN to Stockfish\nGet centipawn scores]
+    STOCK --> FILTER[MistakeCandidateFilter\nIdentify score drops\nMax 8 candidates]
+    FILTER --> SORT[Sort by swing severity\nworst first]
+    SORT --> OLLAMA_LOOP{for each candidate}
+
+    OLLAMA_LOOP -- "top 3 → Ollama" --> PROMPT[Build prompt:\nFEN + move + color +\nphase + move number]
+    PROMPT --> LLM[POST to Ollama\nqwen2.5:7b]
+    LLM --> PARSE_JSON[Parse JSON response:\nseverity, better_move,\nexplanation, tactical_motif]
+    PARSE_JSON --> SAVE_ERR[Save MoveError\nwith full explanation]
+
+    OLLAMA_LOOP -- "remaining → no LLM" --> SAVE_BARE[Save MoveError\nseverity=MISTAKE\nanalysisFailed=true]
+
+    SAVE_ERR --> MORE_CANDIDATES{more candidates?}
+    SAVE_BARE --> MORE_CANDIDATES
+    MORE_CANDIDATES -- yes --> OLLAMA_LOOP
+    MORE_CANDIDATES -- no --> MARK[game.status = ANALYZED\ngame.analyzedAt = now\nsave to DB]
+
+    MARK --> INC[progressTracker.increment]
+    INC --> NEXT{more games?}
+    NEXT -- yes --> LOOP
+    NEXT -- no --> PATTERN[PatternAggregator.recompute\nset patternGenerating = true]
+    PATTERN --> DONE([progressTracker.finish])
+```
+
+### Key thresholds (MistakeCandidateFilter)
+
+| Parameter | Value | Meaning |
+|---|---|---|
+| `MISTAKE_THRESHOLD` | 1.0 pawns | Minimum score drop to be flagged |
+| `BLUNDER_THRESHOLD` | 2.0 pawns | Score drop that classifies as a blunder |
+| `TIME_PRESSURE_CUTOFF` | 30 seconds | Clock remaining below this → time pressure flag |
+| `MAX_CANDIDATES` | 8 per game | Upper bound on mistakes identified |
+| `MAX_OLLAMA_CALLS_PER_GAME` | 3 per game | Ollama only called for the 3 worst mistakes |
+
+### Why only 3 Ollama calls per game?
+
+Each Ollama call takes 7–16 seconds. With 74 games × 3 calls = 222 Ollama calls ≈ 35–50 minutes total.
+Remaining mistakes (up to 5 more) are saved without natural language explanation to preserve
+pattern count accuracy without multiplying inference time.
+
+---
+
+## AI Reasoning Flow
+
+Three separate AI calls happen across the full pipeline, each using `qwen2.5:7b` via Ollama.
+
+### Call 1 — Per-Move Analysis (×3 per game)
+
+**Input prompt:**
+```
+Chess coach. Identify this mistake briefly.
+
+FEN: rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2
+Move: Nc6 | Color: black | Phase: OPENING | Move #4
+
+Respond ONLY with JSON, no extra text:
+{
+  "severity": "BLUNDER" | "MISTAKE" | "INACCURACY",
+  "better_move": "<SAN>",
+  "explanation": "<one sentence: why bad and what to play instead>",
+  "tactical_motif": "FORK" | "PIN" | "SKEWER" | "BACK_RANK" | "DISCOVERED_ATTACK" | "HANGING_PIECE" | "POSITIONAL" | "OTHER"
+}
+```
+
+**Output (parsed into MoveError):**
+```json
+{
+  "severity": "MISTAKE",
+  "better_move": "d5",
+  "explanation": "Nc6 allows White to gain central control; d5 immediately contests the center.",
+  "tactical_motif": "POSITIONAL"
+}
+```
+
+```mermaid
+flowchart LR
+    FEN[FEN position\nbefore move] --> PT[PromptTemplates\n.moveAnalysis]
+    MOVE[SAN move\nplayer color\ngame phase\nmove number] --> PT
+    PT --> OL[Ollama\nqwen2.5:7b]
+    OL --> JSON[Raw JSON string]
+    JSON --> STRIP[Strip markdown fences\nif present]
+    STRIP --> PARSE[Jackson ObjectMapper\ndeserialize]
+    PARSE --> RES[MoveAnalysisResult\nbetterMove severity\nexplanation tacticalMotif]
+```
+
+**JSON mode enforcement:** `OllamaAnalysisClient` sends `"format": "json"` in every
+request body, activating Ollama's grammar-constrained JSON mode. This forces the model
+to produce syntactically valid JSON. The fence-stripping fallback handles the edge case
+where the model prepends ` ```json ` despite the format constraint.
+
+---
+
+### Call 2 — Pattern Report (×1 after all games analyzed)
+
+Aggregated statistics across all games are compiled programmatically, then sent to the LLM
+to produce a natural language coaching summary.
+
+**What gets aggregated before the LLM call:**
+
+```mermaid
+flowchart TD
+    ERRORS[All MoveErrors\nwhere analysisFailed=false] --> MR[Move range distribution\n1-10, 11-20, 21-30, 31+]
+    ERRORS --> PH[Phase breakdown\nOpening, Middlegame, Endgame]
+    ERRORS --> MF[Motif frequency map\nFORK:12, PIN:8, etc.]
+    ERRORS --> OA[Opening accuracy map\nC41:errors, B07:errors, etc.]
+    MR & PH & MF & OA --> PROMPT[PromptTemplates\n.patternReport]
+    PROMPT --> OL[Ollama\nqwen2.5:7b]
+    OL --> PR[PatternReportResult\nprimary_weakness\nsecondary_weakness\ncritical_move_range\ndominant_motif\nopening_assessment]
+    PR --> DB[(PlayerPattern\nsaved to DB)]
+```
+
+**Example output from the LLM:**
+```json
+{
+  "primary_weakness": "You consistently blunder in endgames after move 30 under time pressure.",
+  "secondary_weakness": "Hanging pieces in the middlegame are your most frequent tactical oversight.",
+  "tertiary_weakness": "Your opening play in B-series defenses leads to early positional concessions.",
+  "critical_move_range": "moves 21-30",
+  "dominant_motif": "HANGING_PIECE",
+  "opening_assessment": "Strong in C41 Philidor but frequently misplays B07 Pirc structures."
+}
+```
+
+---
+
+### Call 3 — Training Plan (×1 on demand)
+
+Generated when the user visits the Training Plan page and triggers generation.
+
+```mermaid
+flowchart TD
+    PAT[PlayerPattern JSON\nweaknesses + motifs] --> TP[PromptTemplates\n.trainingPlan]
+    OS[Opening stats JSON\nwin rates per ECO] --> TP
+    TP --> OL[Ollama\nqwen2.5:7b]
+    OL --> PLAN[TrainingPlan JSON\n3 priorities with focus+action+reason\nopenings to drill\ntactical patterns to study]
+    PLAN --> DB[(TrainingPlan\nsaved to DB)]
+```
+
+---
+
+## Pattern Aggregation
+
+After all games are analyzed, `PatternAggregator.recompute()` runs in the same async thread:
+
+1. Loads all `MoveError` records where `analysisFailed = false`
+2. Computes statistical distributions (move range, phase, motif) purely in Java
+3. Calls Ollama once with the aggregated data
+4. Saves `PlayerPattern` to DB (replaces any prior pattern for this user)
+
+The pattern is the foundation for both the Dashboard's "Mistakes by Phase" bars and the
+"Today's Focus" banner, and feeds directly into the Training Plan generation.
+
+---
+
+## Frontend Architecture
+
+```mermaid
+graph TD
+    APP[App.tsx\nRouter + QueryClientProvider] --> LAYOUT[Layout.tsx\nNav + SyncStatusBanner]
+    LAYOUT --> DASH[Dashboard.tsx]
+    LAYOUT --> GAMES[GameList.tsx]
+    LAYOUT --> GAME[GameAnalysis.tsx]
+    LAYOUT --> PAT[PatternReport.tsx]
+    LAYOUT --> TRAIN[TrainingPlan.tsx]
+
+    LAYOUT --> BANNER[SyncStatusBanner.tsx\nalways mounted]
+
+    BANNER --> uSS[useSyncStatus\npolls /api/sync/status\nevery 3s when SYNCING]
+    BANNER --> uAP[useAnalysisProgress\npolls /api/analysis/progress\nevery 2s when running/queued]
+
+    GAME --> CB[ChessBoard.tsx\nreact-chessboard\ncustomArrows prop]
+    GAME --> MEC[MoveErrorCard.tsx]
+    GAME --> uGA[useGameAnalysis\nfetches move errors]
+
+    DASH --> RC[RatingChart.tsx\nRecharts LineChart]
+    DASH --> OD[OpeningDistribution.tsx\nclick-to-expand]
+    DASH --> BWO[BestWorstOpenings.tsx]
+    DASH --> RG[RecentGames.tsx]
+
+    uSS & uAP --> QC[TanStack Query\nclient cache]
+    QC --> API[api/client.ts\nfetch wrapper]
+    API --> BE[Backend :8086]
+```
+
+### Key hooks
+
+| Hook | Purpose | Polling |
+|---|---|---|
+| `useAnalysisProgress` | Polls `/api/analysis/progress` | 2s when `running`, `queued`, or `patternGenerating`; 20s warmup after any mutation |
+| `useSyncStatus` | Polls `/api/sync/status` | 3s when `state === SYNCING` or `ANALYZING` |
+| `usePatternReport` | Fetches pattern once | No polling |
+| `useGameAnalysis` | Fetches move errors for a game | No polling |
+
+### Chess board arrows (GameAnalysis)
+
+When a mistake card is clicked, `chess.js` converts SAN notation to board squares
+by replaying the position from the stored FEN:
+
+```
+FEN + SAN  →  chess.move(san)  →  { from: 'e2', to: 'e4' }
+             (move_played)         red arrow
+
+FEN + SAN  →  chess.move(san)  →  { from: 'd7', to: 'd5' }
+             (better_move)         green arrow
+```
+
+---
+
+## Backend Architecture
+
+```mermaid
+graph TD
+    subgraph API["Controllers (REST)"]
+        SC[SyncController\nPOST /api/sync\nPOST /api/sync/force-resync\nGET /api/sync/status]
+        AC[AnalysisController\nPOST /api/analysis/reanalyze\nGET /api/analysis/progress\nGET /api/analysis/{gameId}]
+        DC[DashboardController\nGET /api/dashboard/stats]
+        GC[GamesController\nGET /api/games]
+    end
+
+    subgraph Services
+        ASS[AsyncSyncService\n@Async wrapper]
+        SS[SyncService\nsync + forceResync\nsyncQueued flag]
+        APO[AnalysisPipelineOrchestrator\n@Async analyzeGames]
+        APT[AnalysisProgressTracker\nrunning, queued, patternGenerating\nvolatile + AtomicInteger]
+        PA[PatternAggregator\nrecompute]
+    end
+
+    subgraph Analysis
+        PS[PgnParserService\nchesslib integration]
+        PE[PositionEvaluator\nStockfish subprocess]
+        MCF[MistakeCandidateFilter\nthreshold filtering]
+        OAC[OllamaAnalysisClient\nHTTP to :11434]
+        PT[PromptTemplates\nstatic factory methods]
+    end
+
+    subgraph Repositories
+        GR[GameRepository]
+        MER[MoveErrorRepository]
+        SHR[SyncHistoryRepository]
+        PPR[PlayerPatternRepository]
+        TPR[TrainingPlanRepository]
+    end
+
+    SC --> ASS --> SS
+    SC --> SS
+    AC --> APO
+    AC --> APT
+    APO --> PS & PE & MCF & OAC & PA
+    OAC --> PT
+    SS & APO & PA --> GR & MER & SHR & PPR
+    DC & GC --> GR & MER & PPR
+```
+
+### Thread model
+
+```mermaid
+sequenceDiagram
+    participant HT as HTTP Thread\n(Tomcat)
+    participant AE as analysisExecutor\n(1 thread)
+    participant SF as Stockfish Process
+    participant OL as Ollama HTTP
+
+    Note over HT: POST /api/analysis/reanalyze
+    HT->>HT: reset all games to PENDING\ndelete move errors\nset queued=true
+    HT->>AE: submit analyzeGames() task
+    HT-->>HT: return 202 immediately
+
+    Note over AE: analysisExecutor thread
+    AE->>AE: progressTracker.start(74)\nqueued=false, running=true
+
+    loop 74 games × N moves
+        AE->>SF: stdin: "position fen X\ngo depth 18"
+        SF-->>AE: stdout: "bestmove e2e4 info score cp 45"
+    end
+
+    loop top 3 mistakes per game
+        AE->>OL: POST /api/generate\n{model, prompt, stream:false}
+        OL-->>AE: {response: "{...json...}"}
+    end
+
+    AE->>AE: progressTracker.finish\npatternGenerating=true
+    AE->>OL: POST /api/generate (pattern report)
+    OL-->>AE: pattern JSON
+    AE->>AE: progressTracker.finish
+```
+
+The `analysisExecutor` has `corePoolSize=1, maxPoolSize=1, queueCapacity=50` — intentionally
+single-threaded to ensure Ollama and Stockfish are never called concurrently, avoiding
+memory exhaustion on a 24 GB system with other processes running.
+
+---
+
+## Progress Tracking
+
+`AnalysisProgressTracker` is a Spring `@Component` singleton holding all pipeline state
+in-memory via volatile fields and an `AtomicInteger`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> IDLE : initial state
+    IDLE --> QUEUED : setQueued(true)\ncalled before async submit
+    QUEUED --> RUNNING : start(totalGames)\ncalled inside async thread
+    RUNNING --> PATTERN_GEN : all games done\nsetPatternGenerating(true)
+    PATTERN_GEN --> IDLE : finish()
+
+    note right of QUEUED
+        isRunning() = false
+        isQueued() = true
+        Frontend polls because queued=true
+    end note
+
+    note right of RUNNING
+        isRunning() = true
+        completed increments per game
+        ETA = elapsed / completed × remaining
+    end note
+```
+
+**Why in-memory instead of DB?**
+
+Progress updates happen every few seconds per game. Writing to PostgreSQL on every
+increment would add unnecessary DB load and latency to a pipeline that already takes
+35–50 minutes. Volatile fields give instant reads at zero cost.
+
+**The race condition fix:**
+
+Without the `queued` flag, there was a window between the HTTP response returning and
+the async thread calling `start()`. The frontend would poll once, see `running=false`,
+stop polling, and the progress banner would never appear. Setting `queued=true` synchronously
+in the controller (before submitting the async task) means the very first poll after
+`onSuccess` already sees activity.
+
+---
+
+## Key Design Decisions
+
+### 1. Two-stage analysis: Stockfish evaluates, Ollama explains
+
+Stockfish is deterministic and fast for numerical evaluation (centipawn scores per position).
+Ollama provides the human-readable "why this was a mistake and what to play instead."
+Neither alone is sufficient — Stockfish can't explain, Ollama can't reliably calculate.
+
+### 2. Max 3 Ollama calls per game
+
+With 74 games and 7–16 seconds per call, full Ollama coverage would take 2–3 hours.
+Limiting to the 3 worst mistakes per game (sorted by centipawn swing) captures the
+most instructive moments while keeping total analysis time under 50 minutes.
+The remaining mistakes (up to 5) are still stored for pattern counting — just without
+natural language explanation (`analysisFailed=true`).
+
+### 3. Single-threaded analysis executor
+
+Ollama's `qwen2.5:7b` loads 2.4 GB into non-pageable host RAM and 4.0 GB into VRAM.
+Running two Ollama calls in parallel would require 8 GB VRAM (unavailable on RTX 3050)
+and could exhaust system RAM. One thread serializes all AI work safely.
+
+### 4. No Flyway — `ddl-auto: update`
+
+This is a personal single-user tool, not a multi-environment deployment. Hibernate
+auto-creates and migrates the schema on boot. Flyway adds ceremony (migration files,
+version tracking) that slows iteration without meaningful benefit at this scale.
+
+### 5. Chess.com sync history table
+
+Rather than comparing every game UUID on every sync, `SyncHistory` records which
+year/month combinations have been fetched. Sync checks this first and skips months
+already processed — reducing Chess.com API calls from O(all games) to O(new months).
+`forceResync` clears these records before syncing to force a complete re-check.
+
+### 6. One large transaction per analysis run (current limitation)
+
+`analyzeGames()` is annotated `@Async @Transactional`. The `@Transactional` wraps the
+entire 74-game run in one database transaction. This means:
+- If the JVM is killed mid-run, all work in that run is rolled back (games revert to PENDING)
+- Results are only durable after the complete pipeline finishes
+
+**Known improvement:** remove `@Transactional` from `analyzeGames()` and introduce a
+`@Transactional` per-game method in a separate bean, making the pipeline resumable
+after interruption.
+
+### 7. Snake_case JSON via Jackson naming strategy
+
+The Spring Boot backend uses `MapperFeature.ACCEPT_CASE_INSENSITIVE_PROPERTIES` and
+`PropertyNamingStrategies.SNAKE_CASE`. Java camelCase fields (`percentComplete`)
+serialize to `percent_complete` automatically, matching the TypeScript interface
+conventions on the frontend without manual `@JsonProperty` annotations.
+
+### 8. Async sync with queued flag
+
+Prior to the refactor, `SyncService.sync()` ran synchronously on the HTTP thread,
+blocking it for the duration of all Chess.com API calls (up to several minutes).
+Buttons appeared frozen. Moving sync to `@Async` via a separate `AsyncSyncService`
+bean (required because `@Async @Transactional` cannot coexist on the same bean)
+returns `202 Accepted` immediately. The `syncQueued` volatile flag signals the frontend
+before the async thread has had a chance to set `syncing=true`, eliminating the
+race condition on the status poll.
+
+---
+
+## REST API Reference
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/sync` | Trigger incremental sync (new months only). Body: `{username, months}`. Returns 202. |
+| `POST` | `/api/sync/force-resync` | Force re-fetch last N months from Chess.com. Body: `{months}`. Returns 202. |
+| `GET` | `/api/sync/status` | Returns `{state, games_fetched, games_analyzed, games_pending, last_synced_at}` |
+| `POST` | `/api/analysis/reanalyze` | Reset all games to PENDING and queue full reanalysis. Returns 200. |
+| `GET` | `/api/analysis/progress` | Returns `{running, pattern_generating, queued, completed, total, percent_complete, eta_seconds}` |
+| `GET` | `/api/analysis/{gameId}` | Returns list of `MoveError` records for a game |
+| `GET` | `/api/games` | Paginated game list with filters (status, color, result, time_class) |
+| `GET` | `/api/games/{id}` | Full game detail including PGN |
+| `GET` | `/api/dashboard/stats` | Aggregated stats: win rates, accuracy distribution, opening performance, rating history |
+| `GET` | `/api/patterns` | Current `PlayerPattern` for the configured user |
+| `GET` | `/api/training-plan` | Most recent `TrainingPlan` |
+| `POST` | `/api/training-plan/generate` | Generate a new training plan from current pattern data |
+
+All endpoints return `application/json`. No authentication — single-user local tool.
+Frontend proxies `/api/*` to `http://localhost:8086` via Vite's `server.proxy` config.
+
+---
+
+## Non-Functional Considerations
+
+### Performance
+
+- **Bottleneck:** Ollama inference at 7–16s per call. Analysis throughput is bounded by GPU
+  speed, not Java, Stockfish, or the database.
+- **Database:** All heavy queries (`MoveError` aggregations, game filtering) are indexed.
+  PostgreSQL runs in Docker with data on the D: NVMe partition.
+- **Stockfish:** AVX2 binary. Runs at depth 18, which takes milliseconds per position on a
+  modern CPU. Not the bottleneck.
+- **Frontend:** TanStack Query caches all fetched data client-side. Polling only activates
+  when work is in progress (`running || queued || pattern_generating`).
+
+### Reliability
+
+- **Malformed JSON from Ollama:** `OllamaAnalysisClient` catches JSON parse errors and
+  returns a fallback `MoveAnalysisResult` with `analysisFailed=true`. The move error is
+  still saved to DB for pattern counting, just without an explanation.
+- **Chess.com 304 Not Modified:** The `SyncHistory` deduplication means most months are
+  skipped before any HTTP call is made; 304 handling is a secondary safety net.
+- **Backend restart mid-analysis:** Because the entire `analyzeGames()` run is one
+  `@Transactional` context, a JVM kill rolls back all work. All affected games revert to
+  `PENDING` and can be picked up by Re-Analyze All on next boot.
+
+### Privacy
+
+- No game data or user information is sent to any external AI service.
+- Chess.com credentials are stored only in `application.yml` (gitignored).
+- PostgreSQL runs locally in Docker; no cloud DB.
+- Ollama runs fully locally; inference stays on the machine.
+
+---
+
+## Future Considerations
+
+| Feature | Description |
+|---|---|
+| **Per-game transactions** | Replace the single large `@Transactional` on `analyzeGames()` with a per-game commit via a separate `AnalysisTransactionService` bean. Makes the pipeline resumable after JVM kill without losing completed work. |
+| **Fine-tuned model** | Fine-tune a smaller model (e.g. `qwen2.5:1.5b`) on chess coaching data using Unsloth. Would reduce inference time from 7–16s to ~2s, cutting total analysis time from 50 min to ~10 min. |
+| **Opening Trainer** | Integrate a spaced-repetition opening drill module. Pattern report already identifies weak openings by ECO code — this would close the loop by generating drill positions from those lines. |
+| **Opponent analysis** | Extend sync to fetch opponent's recent games for detected weaknesses; useful for pre-game preparation. |
+| **Time pressure deep-dive** | Currently tracked as a boolean flag per move (clock < 30s). Future: correlate time pressure with mistake rate per opening/phase to identify specific situations where time management breaks down. |
+| **Stockfish alternative lines** | Current pipeline captures Stockfish's `bestmove` but not alternative lines. Storing the top-3 engine moves per position would allow more nuanced "why this is better" explanations from the LLM. |
+
+---
+
+## Hardware Reality
+
+The system is tuned for this specific hardware configuration:
+
+| Component | Spec | Role in Praxis |
+|---|---|---|
+| CPU | AMD Ryzen 7 7735HS (8c/16t) | Stockfish evaluation, Spring Boot |
+| RAM | 24 GB DDR5 4800 MT/s | Ollama host model buffer (2.4 GB pinned) + JVM + OS |
+| GPU 0 | AMD Radeon 680M (iGPU) | Display only |
+| GPU 1 | NVIDIA RTX 3050 Laptop 4 GB | Ollama CUDA inference (4 GB VRAM fully used) |
+| Storage | Micron 2500 NVMe 954 GB (C: + D: same disk) | PostgreSQL (Docker WSL2 on D:), page file on D: |
+
+**Memory pressure during analysis:**
+
+```
+RTX 3050 VRAM (4 GB):     ████████████████████ 100% — model GPU layers
+Host RAM — model buffer:  ████████░░░░░░░░░░░░  2.4 GB pinned non-pageable
+Host RAM — system + JVM:  ████████████░░░░░░░░  ~19 GB in use during analysis
+Page file (D: drive):     grows to ~23 GB to back committed virtual memory
+```
+
+The page file was moved from C: to D: to prevent C: from filling during sustained
+analysis sessions (Ollama's pinned RAM forces Windows to page other processes to disk).
+Both partitions are on the same physical NVMe SSD, so performance is identical.
+
+---
+
+## Flow Summary
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant FE as Frontend
+    participant BE as Backend
+    participant DB as PostgreSQL
+    participant SF as Stockfish
+    participant OL as Ollama
+
+    User->>FE: Sync Now
+    FE->>BE: POST /api/sync → 202
+    BE->>BE: fetch Chess.com games (async)
+    BE->>DB: save new games (PENDING)
+
+    User->>FE: Re-Analyze All
+    FE->>BE: POST /api/analysis/reanalyze → 200
+    BE->>DB: reset all games to PENDING
+    BE->>BE: queued=true (instant signal to frontend)
+
+    loop 74 games
+        BE->>SF: evaluate all positions (centipawns)
+        SF-->>BE: score per position
+        BE->>BE: filter mistakes by threshold\n(≥1.0 pawn drop)
+        loop top 3 mistakes
+            BE->>OL: analyze FEN + move → JSON
+            OL-->>BE: severity, better_move, explanation, motif
+        end
+        BE->>DB: save MoveError records
+        BE->>DB: game.status = ANALYZED
+    end
+
+    BE->>OL: pattern report (aggregated stats)
+    OL-->>BE: primary/secondary/tertiary weakness
+    BE->>DB: save PlayerPattern
+
+    FE->>FE: toast "Analysis complete"
+    FE->>BE: GET /api/dashboard/stats
+    BE->>DB: aggregate stats
+    DB-->>BE: stats
+    BE-->>FE: dashboard data
+    FE->>User: updated Dashboard
+```

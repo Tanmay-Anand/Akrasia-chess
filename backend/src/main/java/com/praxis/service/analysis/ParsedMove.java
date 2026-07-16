@@ -5,5 +5,6 @@ public record ParsedMove(
     String san,
     String fenBefore,
     String fenAfter,
-    Integer clockRemainingSeconds
+    Integer clockRemainingSeconds,
+    Double evalScore   // from Chess.com %eval annotation (White's perspective); null if not available
 ) {}

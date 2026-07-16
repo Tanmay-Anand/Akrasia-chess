@@ -11,7 +11,7 @@ import java.util.List;
 public class MistakeCandidateFilter {
 
     private static final double BLUNDER_THRESHOLD    = 2.0;
-    private static final double MISTAKE_THRESHOLD    = 1.5;
+    private static final double MISTAKE_THRESHOLD    = 1.0;
     private static final int    TIME_PRESSURE_CUTOFF = 30; // seconds
     private static final int    MAX_CANDIDATES       = 8;
 

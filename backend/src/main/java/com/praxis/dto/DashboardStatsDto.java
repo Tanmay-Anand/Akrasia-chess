@@ -1,7 +1,6 @@
 package com.praxis.dto;
 
 import java.util.List;
-import java.util.Map;
 
 public record DashboardStatsDto(
     int totalGames,
@@ -9,6 +8,19 @@ public record DashboardStatsDto(
     int losses,
     int draws,
     int gamesAnalyzed,
-    Map<String, Integer> openingDistribution,
-    List<RatingPointDto> ratingHistory
+    int currentRating,
+    int ratingDelta,
+    Double avgAccuracy,
+    Double bestAccuracy,
+    int blunderCount,
+    List<OpeningStatDto> openingStats,
+    List<RatingPointDto> ratingHistory,
+    List<RecentGameDto> recentGames,
+    // Coach page additions
+    int whiteGames,
+    double whiteWinPct,
+    int blackGames,
+    double blackWinPct,
+    int formStreak,
+    List<TimeControlStatDto> timeControlStats
 ) {}

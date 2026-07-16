@@ -7,23 +7,17 @@ public final class PromptTemplates {
     public static String moveAnalysis(String fenBefore, String sanMove, String playerColor,
                                       String phase, int moveNumber) {
         return """
-            You are a chess coach analyzing a specific position.
+            Chess coach. Identify this mistake briefly.
 
-            Position (FEN): %s
-            Move played: %s
-            Player color: %s
-            Game phase: %s
-            Move number: %d
+            FEN: %s
+            Move: %s | Color: %s | Phase: %s | Move #%d
 
-            Analyze why this move is a mistake and what the better alternative was.
-
-            Respond ONLY with a JSON object matching this exact schema. No preamble. No explanation outside the JSON:
+            Respond ONLY with JSON, no extra text:
             {
               "severity": "BLUNDER" | "MISTAKE" | "INACCURACY",
-              "better_move": "<SAN notation>",
-              "explanation": "<2-3 sentence plain English explanation of why the played move is bad and why the better move is stronger>",
-              "tactical_motif": "<one of: FORK | PIN | SKEWER | BACK_RANK | DISCOVERED_ATTACK | HANGING_PIECE | POSITIONAL | OTHER>",
-              "phase_assessment": "<one sentence about the position phase-specific demands>"
+              "better_move": "<SAN>",
+              "explanation": "<one sentence: why bad and what to play instead>",
+              "tactical_motif": "FORK" | "PIN" | "SKEWER" | "BACK_RANK" | "DISCOVERED_ATTACK" | "HANGING_PIECE" | "POSITIONAL" | "OTHER"
             }
             """.formatted(fenBefore, sanMove, playerColor, phase, moveNumber);
     }

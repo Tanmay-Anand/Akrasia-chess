@@ -68,6 +68,9 @@ public class Game {
     @Column(name = "black_rating")
     private Integer blackRating;
 
+    @Column(name = "accuracy")
+    private Double accuracy;
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private OffsetDateTime createdAt;

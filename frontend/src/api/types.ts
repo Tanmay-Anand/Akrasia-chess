@@ -15,6 +15,8 @@ export interface GameSummary {
   opening_name: string | null
   analysis_status: AnalysisStatus
   player_rating: number
+  accuracy: number | null
+  mistake_count: number
 }
 
 export interface MoveError {
@@ -39,9 +41,45 @@ export interface SyncStatus {
   last_synced_at: string
 }
 
+export interface AnalysisProgress {
+  running: boolean
+  pattern_generating: boolean
+  queued: boolean
+  completed: number
+  total: number
+  percent_complete: number
+  eta_seconds: number
+}
+
 export interface RatingPoint {
   date: string
   rating: number
+}
+
+export interface OpeningStat {
+  eco: string
+  name: string | null
+  games: number
+  wins: number
+  win_pct: number
+}
+
+export interface RecentGame {
+  id: string
+  played_at: string | null
+  time_class: string | null
+  player_color: string
+  result: string
+  opening_eco: string | null
+  opening_name: string | null
+  accuracy: number | null
+}
+
+export interface TimeControlStat {
+  time_class: string
+  games: number
+  wins: number
+  win_pct: number
 }
 
 export interface DashboardStats {
@@ -50,8 +88,21 @@ export interface DashboardStats {
   losses: number
   draws: number
   games_analyzed: number
-  opening_distribution: Record<string, number>
+  current_rating: number
+  rating_delta: number
+  avg_accuracy: number | null
+  best_accuracy: number | null
+  blunder_count: number
+  opening_stats: OpeningStat[]
   rating_history: RatingPoint[]
+  recent_games: RecentGame[]
+  // Coach additions
+  white_games: number
+  white_win_pct: number
+  black_games: number
+  black_win_pct: number
+  form_streak: number
+  time_control_stats: TimeControlStat[]
 }
 
 export interface Pattern {
