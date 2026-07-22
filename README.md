@@ -221,7 +221,21 @@ praxis-chess/
 
 ## Why Fully Offline?
 
-Your game history is personal. This platform intentionally sends nothing to external AI services. The Chess.com Public API is the only outbound call — and that's read-only public data you already own.
+Most AI chess tools require uploading your games to cloud services. Praxis-Chess takes a different approach.
+
+Every analysis runs locally on your machine. Stockfish evaluates your positions, Ollama generates explanations and training plans, and PostgreSQL stores your data. Nothing is sent to external AI providers, and no account, subscription, or internet connection is required after your games have been synced.
+
+The only outbound request is to the Chess.com Public API to download games from your own public profile. After that, every evaluation, pattern report, and training recommendation happens entirely offline.
+
+This approach provides:
+
+- **Privacy by default** : your games, evaluations, and improvement history never leave your computer.
+- **No cloud dependency** : keep analyzing games even without an internet connection.
+- **No API costs or rate limits** : run as many analyses as you want using your own hardware.
+- **Full ownership of your data** : your database, engine, and AI model are all under your control.
+- **Transparent architecture** : every component, from Stockfish to the local LLM, is open and inspectable.
+
+Praxis-Chess is designed as a personal chess improvement system, not a cloud service. You own the data, you run the analysis, and you decide when and how it operates.
 
 ---
 
