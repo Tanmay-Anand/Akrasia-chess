@@ -48,9 +48,22 @@ export function SyncStatusBanner() {
     onSuccess: () => { startWarmup(); invalidate() },
   })
 
+  const analyzePendingMutation = useMutation({
+    mutationFn: () => api.analysis.analyzePending(),
+    onSuccess: () => { startWarmup(); invalidate() },
+  })
+
+  const reanalyzeAllMutation = useMutation({
+    mutationFn: () => api.analysis.reanalyzeAll(),
+    onSuccess: () => { startWarmup(); invalidate() },
+  })
+
   const isAnalyzing = progress?.running || progress?.pattern_generating
   const isActive = status?.state === 'SYNCING' || isAnalyzing
   const isBusy = isActive || syncMutation.isPending || forceResyncMutation.isPending
+    || analyzePendingMutation.isPending || reanalyzeAllMutation.isPending
+
+  const hasPending = (status?.games_pending ?? 0) > 0
 
   const pct = progress?.percent_complete ?? 0
   const eta = progress ? fmtEta(progress.eta_seconds) : ''
@@ -97,7 +110,25 @@ export function SyncStatusBanner() {
             {!status && 'Loading...'}
           </span>
 
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <button
+              onClick={() => analyzePendingMutation.mutate()}
+              disabled={isBusy || !hasPending}
+              className="secondary"
+              style={{ padding: '4px 10px', fontSize: '0.72rem', color: hasPending ? 'var(--accent)' : undefined }}
+              title={hasPending ? `Analyze ${status?.games_pending} pending game(s)` : 'No pending games'}
+            >
+              {analyzePendingMutation.isPending ? 'Queuing...' : `▶ Analyze Pending${hasPending ? ` (${status?.games_pending})` : ''}`}
+            </button>
+            <button
+              onClick={() => reanalyzeAllMutation.mutate()}
+              disabled={isBusy}
+              className="secondary"
+              style={{ padding: '4px 10px', fontSize: '0.72rem' }}
+              title="Reset and re-analyze all games from scratch"
+            >
+              {reanalyzeAllMutation.isPending ? 'Queuing...' : '⟳ Re-analyze All'}
+            </button>
             <button
               onClick={() => forceResyncMutation.mutate()}
               disabled={isBusy}

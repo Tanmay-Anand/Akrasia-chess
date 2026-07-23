@@ -3,7 +3,10 @@ package com.praxis.repository;
 import com.praxis.domain.Game;
 import com.praxis.domain.enums.AnalysisStatus;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.Optional;
@@ -23,4 +26,10 @@ public interface GameRepository extends JpaRepository<Game, UUID> {
     List<Game> findRecentByUsername(String username);
 
     Optional<Game> findByChessComId(String chessComId);
+
+    // Resets games stuck in ANALYZING state (e.g. after a server crash) back to PENDING
+    @Modifying
+    @Transactional
+    @Query("UPDATE Game g SET g.analysisStatus = :to WHERE g.analysisStatus = :from")
+    int resetAnalysisStatus(@Param("from") AnalysisStatus from, @Param("to") AnalysisStatus to);
 }

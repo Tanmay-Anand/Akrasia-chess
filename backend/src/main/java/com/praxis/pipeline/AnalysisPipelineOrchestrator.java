@@ -1,8 +1,10 @@
 package com.praxis.pipeline;
 
 import com.praxis.domain.Game;
+import com.praxis.domain.enums.AnalysisStatus;
 import com.praxis.repository.GameRepository;
 import com.praxis.service.PatternAggregator;
+import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Async;
@@ -28,6 +30,14 @@ public class AnalysisPipelineOrchestrator {
         this.gameRepository = gameRepository;
         this.patternAggregator = patternAggregator;
         this.progressTracker = progressTracker;
+    }
+
+    @PostConstruct
+    public void recoverStuckGames() {
+        int count = gameRepository.resetAnalysisStatus(AnalysisStatus.ANALYZING, AnalysisStatus.PENDING);
+        if (count > 0) {
+            log.warn("Recovered {} game(s) stuck in ANALYZING state from a previous crash", count);
+        }
     }
 
     @Async("analysisExecutor")

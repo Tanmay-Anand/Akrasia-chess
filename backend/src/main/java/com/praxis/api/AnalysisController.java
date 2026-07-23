@@ -50,15 +50,42 @@ public class AnalysisController {
 
     @GetMapping("/progress")
     public ResponseEntity<AnalysisProgressDto> getProgress() {
-        int completed = progressTracker.getCompleted();
-        int total = progressTracker.getTotal();
+        boolean running    = progressTracker.isRunning();
+        boolean patternGen = progressTracker.isPatternGenerating();
+        boolean queued     = progressTracker.isQueued();
+        int completed      = progressTracker.getCompleted();
+        int total          = progressTracker.getTotal();
+
+        // DB fallback: show queued if in-memory state says idle but unprocessed games exist
+        // (covers restarts and cases where the flag was lost)
+        if (!running && !queued && !patternGen) {
+            String username = appProperties.chessCom().username();
+            long pending   = gameRepository.countByUsernameAndAnalysisStatus(username, AnalysisStatus.PENDING);
+            long analyzing = gameRepository.countByUsernameAndAnalysisStatus(username, AnalysisStatus.ANALYZING);
+            if (pending > 0 || analyzing > 0) {
+                queued = true;
+                total  = (int) (pending + analyzing);
+            }
+        }
+
         int pct = total > 0 ? (int) ((completed * 100.0) / total) : 0;
         return ResponseEntity.ok(new AnalysisProgressDto(
-                progressTracker.isRunning(),
-                progressTracker.isPatternGenerating(),
-                progressTracker.isQueued(),
-                completed, total, pct,
+                running, patternGen, queued, completed, total, pct,
                 progressTracker.getEtaSeconds()));
+    }
+
+    @Transactional
+    @PostMapping("/analyze-pending")
+    public ResponseEntity<Map<String, Object>> analyzePending() {
+        String username = appProperties.chessCom().username();
+        List<Game> pending = gameRepository.findByUsernameAndAnalysisStatus(username, AnalysisStatus.PENDING);
+        if (!pending.isEmpty()) {
+            progressTracker.setQueued(true);
+            pipelineOrchestrator.analyzeGames(pending, username);
+        }
+        return ResponseEntity.ok(Map.of(
+                "message", "Pending games queued for analysis",
+                "games_queued", pending.size()));
     }
 
     @Transactional
