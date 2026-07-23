@@ -64,8 +64,17 @@ public class StockfishService {
         return process != null && process.isAlive();
     }
 
+    // Restarts Stockfish if the process has died.
+    private void ensureAlive() {
+        if (isAvailable()) return;
+        log.warn("Stockfish process dead — attempting restart");
+        destroy();
+        init();
+    }
+
     // Returns evaluation in pawns from White's perspective. null on failure.
     public synchronized Double evaluate(String fen) {
+        ensureAlive();
         if (!isAvailable()) return null;
         try {
             send("position fen " + fen);
@@ -89,6 +98,7 @@ public class StockfishService {
 
     // Returns top-N engine lines at given depth. Used for mistake candidates.
     public synchronized MultiPVResult evaluateWithMultiPV(String fen, int depth, int multiPv) {
+        ensureAlive();
         if (!isAvailable()) return new MultiPVResult(0.0, null, List.of());
         try {
             send("setoption name MultiPV value " + multiPv);

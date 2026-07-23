@@ -54,6 +54,8 @@ export const api = {
 
   analysis: {
     moveErrors: (gameId: string) => request<MoveError[]>(`/analysis/${gameId}`),
+    analyzePending: () =>
+      request<{ message: string; games_queued: number }>('/analysis/analyze-pending', { method: 'POST' }),
     reanalyzeAll: () =>
       request<{ message: string; games_queued: number }>('/analysis/reanalyze', { method: 'POST' }),
     progress: () => request<AnalysisProgress>('/analysis/progress'),
