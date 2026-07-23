@@ -9,6 +9,7 @@ import org.springframework.stereotype.Component;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.util.*;
 
 @Component
 public class StockfishService {
@@ -40,8 +41,8 @@ public class StockfishService {
 
             send("uci");
             waitFor("uciok");
-            send("setoption name Threads value 2");
-            send("setoption name Hash value 64");
+            send("setoption name Threads value 6");
+            send("setoption name Hash value 256");
             send("isready");
             waitFor("readyok");
             log.info("Stockfish ready: {}", path);
@@ -68,7 +69,7 @@ public class StockfishService {
         if (!isAvailable()) return null;
         try {
             send("position fen " + fen);
-            send("go movetime 50");
+            send("go movetime 100");
 
             Double score = null;
             String line;
@@ -84,6 +85,62 @@ public class StockfishService {
             log.warn("Stockfish evaluation error: {}", e.getMessage());
             return null;
         }
+    }
+
+    // Returns top-N engine lines at given depth. Used for mistake candidates.
+    public synchronized MultiPVResult evaluateWithMultiPV(String fen, int depth, int multiPv) {
+        if (!isAvailable()) return new MultiPVResult(0.0, null, List.of());
+        try {
+            send("setoption name MultiPV value " + multiPv);
+            send("position fen " + fen);
+            send("go depth " + depth);
+
+            Map<Integer, String> pvByRank = new LinkedHashMap<>();
+            Map<Integer, Double> scoreByRank = new LinkedHashMap<>();
+            String bestMoveUci = null;
+            String line;
+
+            while ((line = reader.readLine()) != null) {
+                if (line.startsWith("bestmove")) {
+                    String[] parts = line.split("\\s+");
+                    if (parts.length >= 2 && !"(none)".equals(parts[1])) bestMoveUci = parts[1];
+                    break;
+                }
+                if (line.startsWith("info") && line.contains(" multipv ") && line.contains(" pv ")) {
+                    int rank = parseMultiPvRank(line);
+                    if (rank > 0) {
+                        pvByRank.put(rank, extractPv(line));
+                        Double s = parseScore(line);
+                        if (s != null) scoreByRank.put(rank, s);
+                    }
+                }
+            }
+
+            send("setoption name MultiPV value 1");
+
+            double topScore = scoreByRank.getOrDefault(1, 0.0);
+            return new MultiPVResult(topScore, bestMoveUci, List.copyOf(pvByRank.values()));
+        } catch (IOException e) {
+            log.warn("Stockfish MultiPV error: {}", e.getMessage());
+            return new MultiPVResult(0.0, null, List.of());
+        }
+    }
+
+    private int parseMultiPvRank(String line) {
+        int idx = line.indexOf(" multipv ");
+        if (idx < 0) return -1;
+        int start = idx + 9;
+        int end = line.indexOf(' ', start);
+        try { return Integer.parseInt(end >= 0 ? line.substring(start, end) : line.substring(start)); }
+        catch (NumberFormatException e) { return -1; }
+    }
+
+    private String extractPv(String line) {
+        int pvIdx = line.indexOf(" pv ");
+        if (pvIdx < 0) return "";
+        String[] moves = line.substring(pvIdx + 4).trim().split("\\s+");
+        int take = Math.min(moves.length, 4);
+        return String.join(" ", Arrays.copyOf(moves, take));
     }
 
     private Double parseScore(String infoLine) {

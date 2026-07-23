@@ -46,17 +46,22 @@ export function MoveErrorCard({ error, isSelected, onClick }: Props) {
       </div>
       {error.better_move && (
         <div style={{ fontSize: '0.8rem', color: 'var(--green)', marginBottom: 4 }}>
-          Better: <strong>{error.better_move}</strong>
+          Engine best: <strong>{error.better_move}</strong>
         </div>
       )}
-      {error.explanation && !error.analysis_failed && (
+      {error.explanation && error.analysis_state === 'EXPLAINED' && (
         <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
           {error.explanation}
         </p>
       )}
-      {error.analysis_failed && (
+      {error.analysis_state === 'SKIPPED' && (
+        <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+          Detected by engine — no commentary (outside top 3 worst mistakes).
+        </p>
+      )}
+      {error.analysis_state === 'LLM_FAILED' && (
         <p style={{ fontSize: '0.78rem', color: 'var(--red)', fontStyle: 'italic' }}>
-          AI analysis unavailable for this move.
+          AI commentary failed for this move.
         </p>
       )}
       {error.clock_remaining !== null && error.clock_remaining !== undefined && error.clock_remaining <= 30 && (

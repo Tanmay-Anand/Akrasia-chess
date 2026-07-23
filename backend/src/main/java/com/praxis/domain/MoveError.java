@@ -1,5 +1,6 @@
 package com.praxis.domain;
 
+import com.praxis.domain.enums.AnalysisState;
 import com.praxis.domain.enums.GamePhase;
 import com.praxis.domain.enums.Severity;
 import com.praxis.domain.enums.TacticalMotif;
@@ -64,9 +65,9 @@ public class MoveError {
     @Column(name = "clock_remaining")
     private Integer clockRemaining;
 
-    @Column(name = "analysis_failed")
-    @Builder.Default
-    private boolean analysisFailed = false;
+    @Enumerated(EnumType.STRING)
+    @Column(name = "analysis_state", length = 16)
+    private AnalysisState analysisState;
 
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)

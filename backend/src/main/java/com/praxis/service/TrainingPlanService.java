@@ -60,7 +60,7 @@ public class TrainingPlanService {
         String openingJson = pattern.getOpeningAccuracy() != null ? pattern.getOpeningAccuracy() : "{}";
         String prompt = PromptTemplates.trainingPlan(patternJson, openingJson);
 
-        TrainingPlanResult result = ollamaClient.analyze(prompt, TrainingPlanResult.class);
+        TrainingPlanResult result = ollamaClient.analyzeReport(prompt, TrainingPlanResult.class);
 
         String planJson = toJson(result);
         String openingsToDrill = toJson(result.openingsToDrill());

@@ -1,33 +1,56 @@
 package com.praxis.service.ai;
 
+import java.util.List;
+
 public final class PromptTemplates {
 
     private PromptTemplates() {}
 
-    public static String moveAnalysis(String fenBefore, String sanMove, String playerColor,
-                                      String phase, int moveNumber) {
+    /**
+     * Per-move explanation prompt. Engine supplies better_move, eval delta, and top lines;
+     * LLM only needs to explain WHY and classify the tactical motif.
+     */
+    public static String moveAnalysis(String fenBefore, String sanPlayed, String bestMoveUci,
+                                      double evalBefore, double evalAfter,
+                                      String playerColor, String phase, int moveNumber,
+                                      List<String> engineLines) {
+        String engineMove = bestMoveUci != null ? bestMoveUci : "unknown";
+        double lost = Math.abs(evalAfter - evalBefore);
+
+        StringBuilder linesSection = new StringBuilder();
+        if (!engineLines.isEmpty()) {
+            linesSection.append("\nEngine top lines (UCI, first 4 moves each):");
+            for (int i = 0; i < engineLines.size(); i++) {
+                linesSection.append("\n  ").append(i + 1).append(". ").append(engineLines.get(i));
+            }
+        }
+
         return """
-            Chess coach. Identify this mistake briefly.
+            You are a chess coach. Explain concisely why the played move is worse than the engine's move.
+            Do NOT suggest moves — the engine move is already determined.
 
-            FEN: %s
-            Move: %s | Color: %s | Phase: %s | Move #%d
+            Position (FEN): %s
+            Move played: %s  (eval: %+.2f → %+.2f, lost %.2f pawns)
+            Engine best:  %s%s
+            Phase: %s | Move #%d | Player: %s
 
-            Respond ONLY with JSON, no extra text:
+            Respond ONLY with JSON:
             {
-              "severity": "BLUNDER" | "MISTAKE" | "INACCURACY",
-              "better_move": "<SAN>",
-              "explanation": "<one sentence: why bad and what to play instead>",
+              "explanation": "<one sentence: why the played move is bad>",
               "tactical_motif": "FORK" | "PIN" | "SKEWER" | "BACK_RANK" | "DISCOVERED_ATTACK" | "HANGING_PIECE" | "POSITIONAL" | "OTHER"
             }
-            """.formatted(fenBefore, sanMove, playerColor, phase, moveNumber);
+            """.formatted(fenBefore, sanPlayed, evalBefore, evalAfter, lost,
+                          engineMove, linesSection, phase, moveNumber, playerColor);
     }
 
     public static String patternReport(int gameCount, int totalMistakes,
                                        String moveRangeDistribution,
+                                       String timePressureDistribution,
                                        String motifFrequencyMap,
                                        String openingDeviationData) {
         return """
             You are a chess coach reviewing aggregated mistake data for a player.
+            Base every claim ONLY on the statistics provided. Do not infer causes not present in the data.
 
             Games analyzed: %d
             Total mistakes flagged: %d
@@ -35,7 +58,10 @@ public final class PromptTemplates {
             Mistake breakdown by move range:
             %s
 
-            Tactical motif frequency:
+            Time-pressure mistakes (clock ≤ 30s) by phase:
+            %s
+
+            Tactical motif frequency (LLM-explained mistakes only):
             %s
 
             Opening deviation summary:
@@ -50,7 +76,8 @@ public final class PromptTemplates {
               "dominant_motif": "<motif name>",
               "opening_assessment": "<one sentence about opening accuracy>"
             }
-            """.formatted(gameCount, totalMistakes, moveRangeDistribution, motifFrequencyMap, openingDeviationData);
+            """.formatted(gameCount, totalMistakes, moveRangeDistribution,
+                          timePressureDistribution, motifFrequencyMap, openingDeviationData);
     }
 
     public static String trainingPlan(String patternReportJson, String openingStatsJson) {

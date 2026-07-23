@@ -4,8 +4,9 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.praxis.domain.MoveError;
 import com.praxis.domain.PlayerPattern;
+import com.praxis.domain.enums.AnalysisState;
+import com.praxis.domain.enums.AnalysisStatus;
 import com.praxis.domain.enums.GamePhase;
-import com.praxis.domain.enums.TacticalMotif;
 import com.praxis.repository.GameRepository;
 import com.praxis.repository.MoveErrorRepository;
 import com.praxis.repository.PlayerPatternRepository;
@@ -26,6 +27,7 @@ import java.util.stream.Collectors;
 public class PatternAggregator {
 
     private static final Logger log = LoggerFactory.getLogger(PatternAggregator.class);
+    private static final int TIME_PRESSURE_SECONDS = 30;
 
     private final MoveErrorRepository moveErrorRepository;
     private final GameRepository gameRepository;
@@ -49,45 +51,57 @@ public class PatternAggregator {
     public void recompute(String username) {
         log.info("Recomputing patterns for {}", username);
 
-        List<MoveError> errors = moveErrorRepository.findSuccessfulByUsername(username);
-        if (errors.isEmpty()) {
+        // All mistakes — used for phase/move-range/opening distributions
+        List<MoveError> allErrors = moveErrorRepository.findAllByUsername(username);
+        // Only LLM-explained mistakes — used for motif frequency (others have no motif)
+        List<MoveError> explainedErrors = moveErrorRepository.findExplainedByUsername(username);
+
+        if (allErrors.isEmpty()) {
             log.info("No move errors found for {}, skipping pattern aggregation", username);
             return;
         }
 
         int gamesAnalyzed = (int) gameRepository.countByUsernameAndAnalysisStatus(
-                username, com.praxis.domain.enums.AnalysisStatus.ANALYZED);
+                username, AnalysisStatus.ANALYZED);
 
-        // Move range distribution
-        int m1to10  = (int) errors.stream().filter(e -> e.getMoveNumber() <= 10).count();
-        int m11to20 = (int) errors.stream().filter(e -> e.getMoveNumber() >= 11 && e.getMoveNumber() <= 20).count();
-        int m21to30 = (int) errors.stream().filter(e -> e.getMoveNumber() >= 21 && e.getMoveNumber() <= 30).count();
-        int m31plus = (int) errors.stream().filter(e -> e.getMoveNumber() > 30).count();
+        // Move range distribution (all mistakes)
+        int m1to10  = (int) allErrors.stream().filter(e -> e.getMoveNumber() <= 10).count();
+        int m11to20 = (int) allErrors.stream().filter(e -> e.getMoveNumber() >= 11 && e.getMoveNumber() <= 20).count();
+        int m21to30 = (int) allErrors.stream().filter(e -> e.getMoveNumber() >= 21 && e.getMoveNumber() <= 30).count();
+        int m31plus = (int) allErrors.stream().filter(e -> e.getMoveNumber() > 30).count();
 
-        // Phase breakdown
-        int opening    = (int) errors.stream().filter(e -> e.getGamePhase() == GamePhase.OPENING).count();
-        int middlegame = (int) errors.stream().filter(e -> e.getGamePhase() == GamePhase.MIDDLEGAME).count();
-        int endgame    = (int) errors.stream().filter(e -> e.getGamePhase() == GamePhase.ENDGAME).count();
+        // Phase breakdown (all mistakes)
+        int opening    = (int) allErrors.stream().filter(e -> e.getGamePhase() == GamePhase.OPENING).count();
+        int middlegame = (int) allErrors.stream().filter(e -> e.getGamePhase() == GamePhase.MIDDLEGAME).count();
+        int endgame    = (int) allErrors.stream().filter(e -> e.getGamePhase() == GamePhase.ENDGAME).count();
 
-        // Motif frequency
-        Map<String, Long> motifFreqRaw = errors.stream()
+        // Time-pressure × phase cross-tab (all mistakes with clock data)
+        Map<String, Long> timePressureByPhase = allErrors.stream()
+                .filter(e -> e.getClockRemaining() != null && e.getClockRemaining() <= TIME_PRESSURE_SECONDS)
+                .collect(Collectors.groupingBy(
+                        e -> e.getGamePhase() != null ? e.getGamePhase().name() : "UNKNOWN",
+                        Collectors.counting()));
+
+        // Motif frequency — only EXPLAINED mistakes (others have no motif data)
+        Map<String, Long> motifFreqRaw = explainedErrors.stream()
                 .filter(e -> e.getTacticalMotif() != null)
                 .collect(Collectors.groupingBy(e -> e.getTacticalMotif().name(), Collectors.counting()));
         Map<String, Integer> motifFreq = motifFreqRaw.entrySet().stream()
                 .collect(Collectors.toMap(Map.Entry::getKey, e -> e.getValue().intValue()));
 
+        String moveRangeDist = "Moves 1-10: %d, Moves 11-20: %d, Moves 21-30: %d, Moves 31+: %d"
+                .formatted(m1to10, m11to20, m21to30, m31plus);
+        String timePressureDist = toJson(timePressureByPhase);
         String motifFreqJson  = toJson(motifFreq);
         String openingAccJson = buildOpeningAccuracyJson(username);
 
-        // Call Ollama for LLM-generated pattern summary
-        String moveRangeDist = "Moves 1-10: %d, Moves 11-20: %d, Moves 21-30: %d, Moves 31+: %d"
-                .formatted(m1to10, m11to20, m21to30, m31plus);
         String prompt = PromptTemplates.patternReport(
-                gamesAnalyzed, errors.size(), moveRangeDist, motifFreqJson, openingAccJson);
+                gamesAnalyzed, allErrors.size(), moveRangeDist,
+                timePressureDist, motifFreqJson, openingAccJson);
 
         PatternReportResult llmResult = null;
         try {
-            llmResult = ollamaClient.analyze(prompt, PatternReportResult.class);
+            llmResult = ollamaClient.analyzeReport(prompt, PatternReportResult.class);
         } catch (Exception e) {
             log.warn("Ollama pattern report failed: {}", e.getMessage());
         }
@@ -114,12 +128,12 @@ public class PatternAggregator {
                 .build();
 
         playerPatternRepository.save(pattern);
-        log.info("Pattern aggregation complete for {}", username);
+        log.info("Pattern aggregation complete for {} ({} total, {} explained, {} time-pressure)",
+                username, allErrors.size(), explainedErrors.size(), timePressureByPhase.values().stream().mapToLong(Long::longValue).sum());
     }
 
     private String buildOpeningAccuracyJson(String username) {
-        // Simplified: group errors by opening eco from joined game
-        Map<String, Long> ecoErrors = moveErrorRepository.findSuccessfulByUsername(username).stream()
+        Map<String, Long> ecoErrors = moveErrorRepository.findAllByUsername(username).stream()
                 .filter(e -> e.getGame().getOpeningEco() != null)
                 .collect(Collectors.groupingBy(
                         e -> e.getGame().getOpeningEco(),

@@ -1,6 +1,7 @@
 package com.praxis.service.analysis;
 
 import com.praxis.domain.enums.GamePhase;
+import com.praxis.domain.enums.Severity;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -12,8 +13,15 @@ public class MistakeCandidateFilter {
 
     private static final double BLUNDER_THRESHOLD    = 2.0;
     private static final double MISTAKE_THRESHOLD    = 1.0;
-    private static final int    TIME_PRESSURE_CUTOFF = 30; // seconds
+    private static final int    TIME_PRESSURE_CUTOFF = 30;
     private static final int    MAX_CANDIDATES       = 8;
+    private static final int    BOOK_MOVES_PLY       = 12; // skip first 6 full moves
+
+    private final StockfishService stockfish;
+
+    public MistakeCandidateFilter(StockfishService stockfish) {
+        this.stockfish = stockfish;
+    }
 
     public List<CandidateMove> filter(ParsedGame game, List<Double> scores) {
         boolean playerIsWhite = "white".equals(game.playerColor());
@@ -22,31 +30,44 @@ public class MistakeCandidateFilter {
         for (int i = 0; i < game.moves().size(); i++) {
             ParsedMove move = game.moves().get(i);
 
-            // Only analyse the player's own moves
+            if (move.moveNumber() <= BOOK_MOVES_PLY) continue; // skip opening book zone
+
             boolean isWhiteMove = (move.moveNumber() % 2 == 1);
             if (playerIsWhite != isWhiteMove) continue;
 
-            double swing = evaluatorSwing(scores, i, playerIsWhite);
-            // Negative swing means the player's position got worse
+            int afterIdx  = Math.min(i, scores.size() - 1);
+            int beforeIdx = Math.max(0, i - 1);
+            double evalAfterRaw  = scores.get(afterIdx);
+            double evalBeforeRaw = scores.get(beforeIdx);
+
+            // Swing from the player's perspective (negative = player's position got worse)
+            double swing = playerIsWhite
+                    ? evalAfterRaw - evalBeforeRaw
+                    : evalBeforeRaw - evalAfterRaw;
+
             if (swing >= -MISTAKE_THRESHOLD) continue;
 
+            Severity severity = swing <= -BLUNDER_THRESHOLD ? Severity.BLUNDER : Severity.MISTAKE;
             boolean timePressure = move.clockRemainingSeconds() != null
                     && move.clockRemainingSeconds() <= TIME_PRESSURE_CUTOFF;
 
-            candidates.add(new CandidateMove(move, swing, detectPhase(move.moveNumber()), timePressure));
+            candidates.add(new CandidateMove(
+                    move, swing, detectPhase(move.moveNumber()), timePressure,
+                    severity, null, evalBeforeRaw, evalAfterRaw, List.of()));
         }
 
-        // Sort by worst swing first, take top N
+        // Sort worst-first, cap at MAX_CANDIDATES
         candidates.sort(Comparator.comparingDouble(CandidateMove::materialSwing));
-        return candidates.subList(0, Math.min(candidates.size(), MAX_CANDIDATES));
-    }
+        List<CandidateMove> top = candidates.subList(0, Math.min(candidates.size(), MAX_CANDIDATES));
 
-    private double evaluatorSwing(List<Double> scores, int moveIndex, boolean playerIsWhite) {
-        if (moveIndex == 0 || scores.isEmpty()) return 0;
-        int afterIdx  = Math.min(moveIndex, scores.size() - 1);
-        int beforeIdx = Math.max(0, moveIndex - 1);
-        double delta = scores.get(afterIdx) - scores.get(beforeIdx);
-        return playerIsWhite ? delta : -delta;
+        // Second pass: depth-18 MultiPV 3 per candidate for bestmove + engine lines
+        return top.stream().map(c -> {
+            MultiPVResult mpv = stockfish.evaluateWithMultiPV(c.move().fenBefore(), 18, 3);
+            String bestMove = mpv.bestMoveUci() != null ? mpv.bestMoveUci() : c.bestMoveUci();
+            return new CandidateMove(
+                    c.move(), c.materialSwing(), c.phase(), c.isTimePressure(),
+                    c.severity(), bestMove, c.evalBefore(), c.evalAfter(), mpv.pvLines());
+        }).toList();
     }
 
     private GamePhase detectPhase(int moveNumber) {
