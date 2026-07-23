@@ -1,6 +1,9 @@
 # Application secrets — copy from application.example.yml and fill in
 backend/src/main/resources/application.yml
 
+# Claude Code project instructions (local only)
+CLAUDE.md
+
 # Maven
 backend/target/
 *.class

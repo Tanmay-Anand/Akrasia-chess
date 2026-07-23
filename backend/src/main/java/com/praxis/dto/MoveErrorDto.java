@@ -15,7 +15,7 @@ public record MoveErrorDto(
     String explanation,
     String gamePhase,
     Integer clockRemaining,
-    boolean analysisFailed
+    String analysisState
 ) {
     public static MoveErrorDto from(MoveError e) {
         return new MoveErrorDto(
@@ -24,6 +24,7 @@ public record MoveErrorDto(
                 e.getTacticalMotif() != null ? e.getTacticalMotif().name() : null,
                 e.getExplanation(),
                 e.getGamePhase() != null ? e.getGamePhase().name() : null,
-                e.getClockRemaining(), e.isAnalysisFailed());
+                e.getClockRemaining(),
+                e.getAnalysisState() != null ? e.getAnalysisState().name() : null);
     }
 }

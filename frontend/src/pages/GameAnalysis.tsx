@@ -8,10 +8,15 @@ import { MoveErrorCard } from '../components/MoveErrorCard'
 import { ChessBoard } from '../components/ChessBoard'
 import type { MoveError } from '../api/types'
 
-function sanToSquares(fen: string, san: string): { from: string; to: string } | null {
+const UCI_PATTERN = /^[a-h][1-8][a-h][1-8][qrbn]?$/
+
+function moveToSquares(fen: string, notation: string): { from: string; to: string } | null {
   try {
     const chess = new Chess(fen)
-    const move = chess.move(san)
+    // Engine bestmoves are stored as UCI (e.g. "e2e4"); SAN for move_played
+    const move = UCI_PATTERN.test(notation)
+      ? chess.move({ from: notation.slice(0, 2), to: notation.slice(2, 4), promotion: notation[4] })
+      : chess.move(notation)
     return move ? { from: move.from, to: move.to } : null
   } catch {
     return null
@@ -22,11 +27,11 @@ function getArrows(error: MoveError) {
   if (!error.fen_position) return []
   const arrows: { from: string; to: string; color: string }[] = []
 
-  const played = sanToSquares(error.fen_position, error.move_played)
+  const played = moveToSquares(error.fen_position, error.move_played)
   if (played) arrows.push({ ...played, color: 'rgb(220, 60, 60)' })
 
   if (error.better_move) {
-    const better = sanToSquares(error.fen_position, error.better_move)
+    const better = moveToSquares(error.fen_position, error.better_move)
     if (better) arrows.push({ ...better, color: 'rgb(50, 190, 100)' })
   }
 

@@ -8,7 +8,7 @@ public record AppProperties(
     ChessCom chessCom,
     Stockfish stockfish
 ) {
-    public record Ollama(String baseUrl, String model) {}
+    public record Ollama(String baseUrl, String model, String moveModel, String reportModel) {}
     public record ChessCom(String username) {}
     public record Stockfish(String path) {}
 

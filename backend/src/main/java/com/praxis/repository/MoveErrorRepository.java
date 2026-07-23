@@ -21,12 +21,13 @@ public interface MoveErrorRepository extends JpaRepository<MoveError, UUID> {
         """)
     List<MoveError> findAllByUsername(String username);
 
+    // Only mistakes where LLM produced an explanation — used for motif frequency
     @Query("""
         SELECT me FROM MoveError me
         JOIN me.game g
-        WHERE g.username = :username AND me.analysisFailed = false
+        WHERE g.username = :username AND me.analysisState = 'EXPLAINED'
         """)
-    List<MoveError> findSuccessfulByUsername(String username);
+    List<MoveError> findExplainedByUsername(String username);
 
     @Transactional
     @Modifying
@@ -35,14 +36,14 @@ public interface MoveErrorRepository extends JpaRepository<MoveError, UUID> {
     @Query("""
         SELECT COUNT(me) FROM MoveError me
         JOIN me.game g
-        WHERE g.username = :username AND me.severity = 'BLUNDER' AND me.analysisFailed = false
+        WHERE g.username = :username AND me.severity = 'BLUNDER'
         """)
     int countBlundersByUsername(String username);
 
     @Query("""
         SELECT me.game.id, COUNT(me) FROM MoveError me
         JOIN me.game g
-        WHERE g.username = :username AND me.analysisFailed = false
+        WHERE g.username = :username
         GROUP BY me.game.id
         """)
     List<Object[]> countSuccessfulPerGameByUsername(@Param("username") String username);

@@ -16,18 +16,35 @@ public class OllamaAnalysisClient {
 
     private final RestClient restClient;
     private final ObjectMapper objectMapper;
-    private final String model;
+    private final String moveModel;    // fast model for per-move calls (×N per game)
+    private final String reportModel;  // quality model for pattern report + training plan (×1)
 
     public OllamaAnalysisClient(AppProperties appProperties, ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
-        this.model = appProperties.ollama().model();
+
+        String base = appProperties.ollama().model();
+        String move = appProperties.ollama().moveModel();
+        String report = appProperties.ollama().reportModel();
+        this.moveModel   = (move   != null && !move.isBlank())   ? move   : base;
+        this.reportModel = (report != null && !report.isBlank()) ? report : base;
+
         this.restClient = RestClient.builder()
                 .baseUrl(appProperties.ollama().baseUrl())
                 .build();
     }
 
-    public <T> T analyze(String prompt, Class<T> responseType) {
-        OllamaRequest request = new OllamaRequest(model, prompt, false, "json", 200);
+    // For per-move explanations — uses the fast move model
+    public <T> T analyzeMove(String prompt, Class<T> responseType) {
+        return analyze(moveModel, prompt, 200, responseType);
+    }
+
+    // For pattern report + training plan — uses the quality report model
+    public <T> T analyzeReport(String prompt, Class<T> responseType) {
+        return analyze(reportModel, prompt, 512, responseType);
+    }
+
+    private <T> T analyze(String model, String prompt, int maxTokens, Class<T> responseType) {
+        OllamaRequest request = new OllamaRequest(model, prompt, false, "json", maxTokens, "2h", 2048);
 
         OllamaGenerateResponse raw = restClient.post()
                 .uri("/api/generate")

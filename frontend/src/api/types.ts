@@ -19,18 +19,20 @@ export interface GameSummary {
   mistake_count: number
 }
 
+export type AnalysisState = 'EXPLAINED' | 'SKIPPED' | 'LLM_FAILED'
+
 export interface MoveError {
   id: string
   move_number: number
   move_played: string
-  better_move: string | null
+  better_move: string | null   // UCI format from engine (e.g. "e2e4") or null
   fen_position: string
   severity: Severity
   tactical_motif: TacticalMotif | null
   explanation: string | null
   game_phase: GamePhase | null
   clock_remaining: number | null
-  analysis_failed: boolean
+  analysis_state: AnalysisState | null  // null for legacy rows before migration
 }
 
 export interface SyncStatus {
