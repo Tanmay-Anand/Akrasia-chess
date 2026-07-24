@@ -1,7 +1,9 @@
 import type {
   AnalysisProgress,
   DashboardStats,
+  Drill,
   GameSummary,
+  Insights,
   MoveError,
   Pattern,
   RatingPoint,
@@ -59,6 +61,14 @@ export const api = {
     reanalyzeAll: () =>
       request<{ message: string; games_queued: number }>('/analysis/reanalyze', { method: 'POST' }),
     progress: () => request<AnalysisProgress>('/analysis/progress'),
+  },
+
+  insights: {
+    get: () => request<Insights>('/insights'),
+  },
+
+  drills: {
+    list: (limit = 20) => request<Drill[]>(`/drills?limit=${limit}`),
   },
 
   patterns: {

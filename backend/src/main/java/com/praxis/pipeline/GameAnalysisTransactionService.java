@@ -97,6 +97,10 @@ public class GameAnalysisTransactionService {
             game.setAccuracy(computeAccuracy(parsedGame, scores));
         }
 
+        // Analytics source data (conversion + time management)
+        game.setMaxAdvantage(computeMaxAdvantage(parsedGame, scores));
+        game.setAvgMoveSeconds(computeAvgMoveSeconds(parsedGame, game.getTimeControl()));
+
         // Fast first pass: score-based filtering, no Stockfish calls yet
         List<CandidateMove> candidates = candidateFilter.filterCandidates(parsedGame, scores);
         List<CandidateMove> sorted = candidates.stream()
@@ -264,6 +268,64 @@ public class GameAnalysisTransactionService {
         double acpl = Math.min((totalLoss / moveCount) * 100.0, 500.0); // centipawns, capped
         double accuracy = 103.1668 * Math.exp(-0.04354 * acpl) - 3.1668;
         return Math.round(Math.max(0.0, Math.min(100.0, accuracy)) * 10.0) / 10.0;
+    }
+
+    // Highest eval (pawns) the player reached, from their perspective. Null if no scores.
+    private Double computeMaxAdvantage(ParsedGame game, List<Double> scores) {
+        if (scores.isEmpty()) return null;
+        boolean playerIsWhite = "white".equals(game.playerColor());
+        double max = Double.NEGATIVE_INFINITY;
+        for (double s : scores) {
+            double fromPlayer = playerIsWhite ? s : -s;
+            if (fromPlayer > max) max = fromPlayer;
+        }
+        return Math.round(max * 100.0) / 100.0;
+    }
+
+    // Average seconds spent per player move, derived from PGN clock deltas.
+    // Returns null when the game has no clock data or is correspondence/daily.
+    private Double computeAvgMoveSeconds(ParsedGame game, String timeControl) {
+        int[] baseInc = parseTimeControl(timeControl);
+        if (baseInc == null) return null; // daily / unparseable
+        int base = baseInc[0];
+        int increment = baseInc[1];
+        boolean playerIsWhite = "white".equals(game.playerColor());
+
+        Integer prevClock = base;
+        double totalSpent = 0.0;
+        int samples = 0;
+
+        for (ParsedMove move : game.moves()) {
+            boolean isWhiteMove = (move.moveNumber() % 2 == 1);
+            if (playerIsWhite != isWhiteMove) continue;
+
+            Integer clock = move.clockRemainingSeconds();
+            if (clock != null && prevClock != null) {
+                double spent = prevClock - clock + increment;
+                if (spent >= 0 && spent <= base) {
+                    totalSpent += spent;
+                    samples++;
+                }
+            }
+            if (clock != null) prevClock = clock;
+        }
+
+        if (samples == 0) return null;
+        return Math.round((totalSpent / samples) * 10.0) / 10.0;
+    }
+
+    // Parses "600+5" -> [600, 5], "180" -> [180, 0]. Returns null for daily ("1/259200") or blank.
+    private int[] parseTimeControl(String tc) {
+        if (tc == null || tc.isBlank() || tc.contains("/")) return null;
+        try {
+            if (tc.contains("+")) {
+                String[] parts = tc.split("\\+");
+                return new int[]{Integer.parseInt(parts[0].trim()), Integer.parseInt(parts[1].trim())};
+            }
+            return new int[]{Integer.parseInt(tc.trim()), 0};
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     private TacticalMotif parseMotif(String raw) {

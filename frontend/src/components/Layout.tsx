@@ -29,6 +29,8 @@ export function Layout() {
         {[
           { to: '/', label: 'Dashboard' },
           { to: '/games', label: 'Games' },
+          { to: '/insights', label: 'Insights' },
+          { to: '/drills', label: 'Drills' },
           { to: '/patterns', label: 'Patterns' },
           { to: '/training', label: 'Training Plan' },
         ].map(({ to, label }) => (
