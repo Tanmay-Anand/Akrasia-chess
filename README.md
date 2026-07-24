@@ -18,6 +18,14 @@ Your chess at a glance — rating trend over time, win/loss/draw breakdown, open
 
 Select any fetched game and get move-by-move coaching. Every mistake is flagged with its severity (blunder, mistake, inaccuracy), the better move, and a plain-English explanation of _why_ — powered by Stockfish evaluation + local LLM.
 
+### Insights
+
+Practical analytics that show where your rating actually leaks: winning-position **conversion rate**, **time-trouble blunder rate**, an **accuracy trend** with a 10-game rolling average, win rate **vs. opponent strength**, **time-of-day / day-of-week** performance, **missed-tactic** frequency, **tilt** (how you play after a loss), and per-opening win rate + accuracy. Everything is derived from data already captured during analysis.
+
+### Drills
+
+Turns analysis into practice. Every blunder with a known engine best move becomes a puzzle — you replay your own losing position and try to find the move you missed, validated live against the engine.
+
 ### Pattern Report
 
 Cross-game aggregation. Instead of per-game feedback, this tells you what _keeps_ happening: which move range you blunder in most, which tactical motifs catch you repeatedly, and where your opening preparation breaks down.
@@ -71,25 +79,28 @@ flowchart TD
 
 ## How Analysis Works
 
-Analysis runs in three stages, entirely offline:
+Analysis runs in four stages, entirely offline:
 
-**Stage 1 — Stockfish evaluates every position**
-Each move's FEN is sent to a local Stockfish subprocess (depth 18). Centipawn score drops ≥ 1.0 pawn are flagged as mistake candidates (max 8 per game).
+**Stage 1 — Stockfish bulk evaluation**
+Every position is evaluated at `movetime 100` with Stockfish, skipping the first 6 full moves of opening book. Centipawn score drops ≥ 1.0 pawn are flagged as mistake candidates (max 8 per game). Severity is computed in Java — never by the LLM.
 
-**Stage 2 — Ollama explains the worst mistakes**
-The top 3 candidates (by severity) are sent to `qwen2.5:7b` via Ollama with a structured JSON prompt. The LLM explains _why_ the move was a mistake and what to play instead.
+**Stage 2 — Deep MultiPV enrichment per candidate**
+Each candidate gets a depth-18 Stockfish search with `MultiPV 3`, capturing the engine's top 3 continuation lines. This determines the `better_move` (UCI format) and engine lines fed into the LLM prompt.
+
+**Stage 3 — Ollama explains (overlapped with Stage 2)**
+The top 3 candidates are explained by `qwen2.5:7b`. The prompt includes the FEN, the move played, Stockfish's best reply, the eval delta in pawns, and the engine's top lines. The LLM's job is limited to explaining *why* — severity and the better move are already determined by Stockfish.
+
+Stages 2 and 3 run in parallel via a `LinkedBlockingQueue`: the main thread runs Stockfish MultiPV on candidate N+1 while a consumer thread calls Ollama for candidate N.
 
 ```json
 {
-  "severity": "BLUNDER",
-  "better_move": "d5",
-  "explanation": "Allows Bxf7+ winning the exchange. d5 contests the center and maintains equality.",
+  "explanation": "Allows Bxf7+ winning the exchange; the engine's Nd5 maintains central control.",
   "tactical_motif": "HANGING_PIECE"
 }
 ```
 
-**Stage 3 — Pattern aggregation**
-After all games are analyzed, error statistics (by phase, move range, motif, opening) are compiled and sent to the LLM once to identify systemic weaknesses across your full game library.
+**Stage 4 — Pattern aggregation**
+After all games are analyzed, error statistics (by phase, move range, motif, opening, time pressure) are compiled and sent to the LLM once to identify systemic weaknesses across your full game library.
 
 Ollama is called with `"format": "json"` (grammar-constrained mode) — output is always parseable, never a wall of text.
 
@@ -196,7 +207,7 @@ praxis-chess/
 │       ├── api/                    # API client + TypeScript types
 │       ├── components/             # SyncStatusBanner, ChessBoard, charts
 │       ├── hooks/                  # useAnalysisProgress, useSyncStatus
-│       └── pages/                  # Dashboard, GameList, GameAnalysis, PatternReport, TrainingPlan
+│       └── pages/                  # Dashboard, GameList, GameAnalysis, Insights, Drills, PatternReport, TrainingPlan
 └── ARCHITECTURE.md                 # Full design decisions + Mermaid diagrams
 ```
 
@@ -213,8 +224,14 @@ praxis-chess/
 - [x] Pattern aggregation engine
 - [x] Training plan generator
 - [x] Dashboard with rating chart + opening breakdown
-- [ ] Per-game transaction commits (resume after JVM kill)
-- [ ] Opening drill integration
+- [x] Per-game transaction commits (resume after JVM kill)
+- [x] Engine-computed severity + MultiPV evidence-rich prompts
+- [x] CPU/GPU overlap via BlockingQueue pipeline
+- [x] ACPL-based accuracy when Chess.com doesn't provide it
+- [x] Analyze Pending button (non-destructive resume after interruption)
+- [x] Insights page (conversion, time management, tilt, opponent strength, trends)
+- [x] Drills — practice your own blunders as puzzles
+- [ ] Spaced-repetition scheduling for drills
 - [ ] Fine-tuned smaller model for faster inference
 
 ---

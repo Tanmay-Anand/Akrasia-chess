@@ -47,4 +47,12 @@ public interface MoveErrorRepository extends JpaRepository<MoveError, UUID> {
         GROUP BY me.game.id
         """)
     List<Object[]> countSuccessfulPerGameByUsername(@Param("username") String username);
+
+    // Mistakes with a known engine best move — used to generate "solve your own blunder" drills.
+    @Query("""
+        SELECT me FROM MoveError me
+        JOIN me.game g
+        WHERE g.username = :username AND me.betterMove IS NOT NULL
+        """)
+    List<MoveError> findDrillCandidatesByUsername(@Param("username") String username);
 }

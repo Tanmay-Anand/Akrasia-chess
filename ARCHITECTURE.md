@@ -170,6 +170,8 @@ erDiagram
         int white_rating
         int black_rating
         double accuracy
+        double max_advantage
+        double avg_move_seconds
         enum analysis_status
         timestamp analyzed_at
     }
@@ -187,7 +189,7 @@ erDiagram
         text explanation
         enum game_phase
         int clock_remaining
-        bool analysis_failed
+        enum analysis_state
     }
 
     SYNC_HISTORY {
@@ -346,17 +348,18 @@ flowchart TD
     EMPTY -- yes --> FAILED[status = FAILED\nsave to DB]
     FAILED --> NEXT
 
-    EMPTY -- no --> STOCK[PositionEvaluator\nSend each FEN to Stockfish\nGet centipawn scores]
-    STOCK --> FILTER[MistakeCandidateFilter\nIdentify score drops\nMax 8 candidates]
+    EMPTY -- no --> STOCK[PositionEvaluator\nSend each FEN to Stockfish\nmovetime 100 fast pass]
+    STOCK --> FILTER[MistakeCandidateFilter\nSkip book moves ply ≤ 12\nIdentify score drops ≥ 1.0p\nMax 8 candidates]
     FILTER --> SORT[Sort by swing severity\nworst first]
     SORT --> OLLAMA_LOOP{for each candidate}
 
-    OLLAMA_LOOP -- "top 3 → Ollama" --> PROMPT[Build prompt:\nFEN + move + color +\nphase + move number]
-    PROMPT --> LLM[POST to Ollama\nqwen2.5:7b]
-    LLM --> PARSE_JSON[Parse JSON response:\nseverity, better_move,\nexplanation, tactical_motif]
-    PARSE_JSON --> SAVE_ERR[Save MoveError\nwith full explanation]
+    OLLAMA_LOOP -- "top 3 → MultiPV + Ollama" --> MULTIPV[Stockfish depth-18\nMultiPV 3\nGet top engine lines]
+    MULTIPV --> PROMPT[Build prompt:\nFEN + move + better_move +\neval delta + engine lines]
+    PROMPT --> LLM[POST to Ollama\nqwen2.5:7b\noverlapped via BlockingQueue]
+    LLM --> PARSE_JSON[Parse JSON response:\nexplanation, tactical_motif]
+    PARSE_JSON --> SAVE_ERR[Save MoveError\nstate=EXPLAINED]
 
-    OLLAMA_LOOP -- "remaining → no LLM" --> SAVE_BARE[Save MoveError\nseverity=MISTAKE\nanalysisFailed=true]
+    OLLAMA_LOOP -- "remaining → no LLM" --> SAVE_BARE[Save MoveError\nseverity from score\nstate=SKIPPED]
 
     SAVE_ERR --> MORE_CANDIDATES{more candidates?}
     SAVE_BARE --> MORE_CANDIDATES
@@ -378,6 +381,7 @@ flowchart TD
 | `BLUNDER_THRESHOLD` | 2.0 pawns | Score drop that classifies as a blunder |
 | `TIME_PRESSURE_CUTOFF` | 30 seconds | Clock remaining below this → time pressure flag |
 | `MAX_CANDIDATES` | 8 per game | Upper bound on mistakes identified |
+| `BOOK_MOVES_PLY` | 12 ply (6 full moves) | Opening moves skipped — engine evals are near-equal and noisy |
 | `MAX_OLLAMA_CALLS_PER_GAME` | 3 per game | Ollama only called for the 3 worst mistakes |
 
 ### Why only 3 Ollama calls per game?
@@ -396,16 +400,21 @@ Three separate AI calls happen across the full pipeline, each using `qwen2.5:7b`
 
 **Input prompt:**
 ```
-Chess coach. Identify this mistake briefly.
+You are a chess coach. Explain concisely why the played move is worse than the engine's move.
+Do NOT suggest moves — the engine move is already determined.
 
-FEN: rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2
-Move: Nc6 | Color: black | Phase: OPENING | Move #4
+Position (FEN): rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2
+Move played: Nc6  (eval: +0.15 → -0.45, lost 0.60 pawns)
+Engine best:  d5
+Engine top lines:
+  1. d5 e5d5 d8d5 b1c3
+  2. Nf6 d2d4 e5d4 f3d4
+  3. b8c6 d2d4 c6d4 f3d4
+Phase: OPENING | Move #4 | Player: black
 
-Respond ONLY with JSON, no extra text:
+Respond ONLY with JSON:
 {
-  "severity": "BLUNDER" | "MISTAKE" | "INACCURACY",
-  "better_move": "<SAN>",
-  "explanation": "<one sentence: why bad and what to play instead>",
+  "explanation": "<one sentence: why the played move is bad>",
   "tactical_motif": "FORK" | "PIN" | "SKEWER" | "BACK_RANK" | "DISCOVERED_ATTACK" | "HANGING_PIECE" | "POSITIONAL" | "OTHER"
 }
 ```
@@ -413,12 +422,12 @@ Respond ONLY with JSON, no extra text:
 **Output (parsed into MoveError):**
 ```json
 {
-  "severity": "MISTAKE",
-  "better_move": "d5",
-  "explanation": "Nc6 allows White to gain central control; d5 immediately contests the center.",
+  "explanation": "Nc6 allows White to seize central control; the engine's d5 immediately contests the center.",
   "tactical_motif": "POSITIONAL"
 }
 ```
+
+Severity (`BLUNDER` / `MISTAKE`) and `better_move` (UCI) are set by Stockfish/Java — the LLM only supplies the human-readable *why*.
 
 ```mermaid
 flowchart LR
@@ -428,7 +437,7 @@ flowchart LR
     OL --> JSON[Raw JSON string]
     JSON --> STRIP[Strip markdown fences\nif present]
     STRIP --> PARSE[Jackson ObjectMapper\ndeserialize]
-    PARSE --> RES[MoveAnalysisResult\nbetterMove severity\nexplanation tacticalMotif]
+    PARSE --> RES[OllamaResult\nexplanation tacticalMotif\nanalysisState]
 ```
 
 **JSON mode enforcement:** `OllamaAnalysisClient` sends `"format": "json"` in every
@@ -447,7 +456,7 @@ to produce a natural language coaching summary.
 
 ```mermaid
 flowchart TD
-    ERRORS[All MoveErrors\nwhere analysisFailed=false] --> MR[Move range distribution\n1-10, 11-20, 21-30, 31+]
+    ERRORS[All MoveErrors\nacross all analyzed games] --> MR[Move range distribution\n1-10, 11-20, 21-30, 31+]
     ERRORS --> PH[Phase breakdown\nOpening, Middlegame, Endgame]
     ERRORS --> MF[Motif frequency map\nFORK:12, PIN:8, etc.]
     ERRORS --> OA[Opening accuracy map\nC41:errors, B07:errors, etc.]
@@ -490,13 +499,49 @@ flowchart TD
 
 After all games are analyzed, `PatternAggregator.recompute()` runs in the same async thread:
 
-1. Loads all `MoveError` records where `analysisFailed = false`
+1. Loads all `MoveError` records for the user's analyzed games
 2. Computes statistical distributions (move range, phase, motif) purely in Java
 3. Calls Ollama once with the aggregated data
 4. Saves `PlayerPattern` to DB (replaces any prior pattern for this user)
 
 The pattern is the foundation for both the Dashboard's "Mistakes by Phase" bars and the
 "Today's Focus" banner, and feeds directly into the Training Plan generation.
+
+---
+
+## Insights & Drills
+
+Both features are **pure read-side aggregation** — no new AI calls. They reuse data already
+persisted during analysis, so they are effectively free to compute at request time for a
+single-user library of a few hundred games.
+
+### Insights (`InsightsService` → `GET /api/insights`)
+
+Loads all games + move errors once and computes, entirely in Java:
+
+| Metric | Derived from |
+|---|---|
+| Winning-position conversion | `game.max_advantage ≥ 2.0` vs. `game.result` |
+| Time-trouble blunder rate | `MoveError.severity = BLUNDER` with `clock_remaining ≤ 30s` |
+| Avg time per move | `game.avg_move_seconds` (mean across timed games) |
+| Accuracy trend | `game.accuracy` ordered by `played_at`, 10-game rolling average |
+| Opponent strength | player vs. opponent rating bucketed at ±50 (`Stronger`/`Even`/`Weaker`) |
+| Time-of-day / weekday | `played_at` hour and day-of-week win rates |
+| Missed tactics | `MoveError.tactical_motif` frequency |
+| Tilt / resilience | win rate in the game after a win vs. after a loss |
+| Openings | win rate + avg accuracy grouped by `opening_eco` |
+
+`max_advantage` (highest eval reached, player's perspective) and `avg_move_seconds` (from PGN
+`[%clk]` deltas, increment-aware) are computed once in `GameAnalysisTransactionService.analyzeOne`
+and stored on the `Game` row.
+
+### Drills (`DrillsController` → `GET /api/drills`)
+
+Every `MoveError` with a non-null `better_move` (engine UCI from MultiPV) is already a complete
+puzzle: the stored `fen_position` is the position before the blunder, and `better_move` is the
+solution. The endpoint returns a shuffled, capped set; the frontend `Drills` page replays the
+position with `react-chessboard` and validates the user's move against the engine move using
+`chess.js`. No backend state is added — drills are a projection of existing rows.
 
 ---
 
@@ -508,6 +553,8 @@ graph TD
     LAYOUT --> DASH[Dashboard.tsx]
     LAYOUT --> GAMES[GameList.tsx]
     LAYOUT --> GAME[GameAnalysis.tsx]
+    LAYOUT --> INS[Insights.tsx]
+    LAYOUT --> DRILL[Drills.tsx]
     LAYOUT --> PAT[PatternReport.tsx]
     LAYOUT --> TRAIN[TrainingPlan.tsx]
 
@@ -616,14 +663,25 @@ sequenceDiagram
     Note over AE: analysisExecutor thread
     AE->>AE: progressTracker.start(74)\nqueued=false, running=true
 
-    loop 74 games × N moves
-        AE->>SF: stdin: "position fen X\ngo depth 18"
-        SF-->>AE: stdout: "bestmove e2e4 info score cp 45"
-    end
+    loop 74 games
+        AE->>SF: "go movetime 100" × N positions (fast pass)
+        SF-->>AE: centipawn score per position
+        Note over AE: filter candidates (skip ply ≤ 12, max 8)
 
-    loop top 3 mistakes per game
-        AE->>OL: POST /api/generate\n{model, prompt, stream:false}
-        OL-->>AE: {response: "{...json...}"}
+        Note over AE,OL: top 3: Stockfish MultiPV + Ollama overlap via LinkedBlockingQueue
+        par Stockfish MultiPV on analysisExecutor thread
+            loop top 3 candidates
+                AE->>SF: "go depth 18" MultiPV 3
+                SF-->>AE: top 3 engine lines + bestmove
+                AE->>AE: push enriched candidate to queue
+            end
+        and Ollama consumer on CompletableFuture thread
+            loop top 3 candidates
+                AE->>OL: POST /api/generate\n{FEN + move + engine lines}
+                OL-->>AE: {explanation, motif}
+            end
+        end
+        AE->>AE: join consumer thread\npersist in REQUIRES_NEW TX
     end
 
     AE->>AE: progressTracker.finish\npatternGenerating=true
@@ -632,9 +690,13 @@ sequenceDiagram
     AE->>AE: progressTracker.finish
 ```
 
-The `analysisExecutor` has `corePoolSize=1, maxPoolSize=1, queueCapacity=50` — intentionally
-single-threaded to ensure Ollama and Stockfish are never called concurrently, avoiding
-memory exhaustion on a 24 GB system with other processes running.
+The `analysisExecutor` has `corePoolSize=1, maxPoolSize=1, queueCapacity=50`. The main analysis
+thread drives Stockfish (serialized — single subprocess with synchronized methods). Ollama
+inference runs on a separate `CompletableFuture.supplyAsync()` consumer thread drawn from the
+JVM common pool, overlapping GPU inference with CPU evaluation via a
+`LinkedBlockingQueue<Optional<CandidateMove>>` (poison-pill termination). Stockfish and Ollama
+no longer block each other: the CPU runs the next MultiPV search while the GPU explains the
+previous candidate.
 
 ---
 
@@ -667,8 +729,13 @@ stateDiagram-v2
 **Why in-memory instead of DB?**
 
 Progress updates happen every few seconds per game. Writing to PostgreSQL on every
-increment would add unnecessary DB load and latency to a pipeline that already takes
-35–50 minutes. Volatile fields give instant reads at zero cost.
+increment would add unnecessary DB load and latency. Volatile fields give instant reads
+at zero cost.
+
+**DB fallback on restart:** If the server restarts mid-analysis, the in-memory `running`/`queued`
+flags reset to false. The `/api/analysis/progress` endpoint has a DB fallback: if the in-memory
+state says idle but `PENDING` or `ANALYZING` games exist in PostgreSQL, it reports `queued=true`
+so the banner stays active until the user manually triggers **Analyze Pending** to resume.
 
 **The race condition fix:**
 
@@ -694,7 +761,7 @@ With 74 games and 7–16 seconds per call, full Ollama coverage would take 2–3
 Limiting to the 3 worst mistakes per game (sorted by centipawn swing) captures the
 most instructive moments while keeping total analysis time under 50 minutes.
 The remaining mistakes (up to 5) are still stored for pattern counting — just without
-natural language explanation (`analysisFailed=true`).
+natural language explanation (`analysis_state = SKIPPED`).
 
 ### 3. Single-threaded analysis executor
 
@@ -715,16 +782,16 @@ year/month combinations have been fetched. Sync checks this first and skips mont
 already processed — reducing Chess.com API calls from O(all games) to O(new months).
 `forceResync` clears these records before syncing to force a complete re-check.
 
-### 6. One large transaction per analysis run (current limitation)
+### 6. Per-game transactions via a separate bean
 
-`analyzeGames()` is annotated `@Async @Transactional`. The `@Transactional` wraps the
-entire 74-game run in one database transaction. This means:
-- If the JVM is killed mid-run, all work in that run is rolled back (games revert to PENDING)
-- Results are only durable after the complete pipeline finishes
-
-**Known improvement:** remove `@Transactional` from `analyzeGames()` and introduce a
-`@Transactional` per-game method in a separate bean, making the pipeline resumable
-after interruption.
+`GameAnalysisTransactionService.analyzeOne()` is annotated `@Transactional(REQUIRES_NEW)` in
+a separate Spring bean (required because `@Async` and `@Transactional` cannot coexist safely
+on the same bean proxy). Each game commits independently. This means:
+- A JVM kill loses only the game in-flight; all prior games remain `ANALYZED`
+- On the next startup, `@PostConstruct` in the orchestrator resets any `ANALYZING` games
+  back to `PENDING` so they are immediately available for pickup
+- Use the **Analyze Pending** button (non-destructive) to resume without re-running
+  already-completed games
 
 ### 7. Snake_case JSON via Jackson naming strategy
 
@@ -753,8 +820,11 @@ race condition on the status poll.
 | `POST` | `/api/sync/force-resync` | Force re-fetch last N months from Chess.com. Body: `{months}`. Returns 202. |
 | `GET` | `/api/sync/status` | Returns `{state, games_fetched, games_analyzed, games_pending, last_synced_at}` |
 | `POST` | `/api/analysis/reanalyze` | Reset all games to PENDING and queue full reanalysis. Returns 200. |
+| `POST` | `/api/analysis/analyze-pending` | Queue only PENDING games (non-destructive resume). Returns `{message, games_queued}`. |
 | `GET` | `/api/analysis/progress` | Returns `{running, pattern_generating, queued, completed, total, percent_complete, eta_seconds}` |
 | `GET` | `/api/analysis/{gameId}` | Returns list of `MoveError` records for a game |
+| `GET` | `/api/insights` | Aggregated analytics: conversion, time management, accuracy trend, opponent strength, time-of-day/weekday, missed tactics, tilt, per-opening stats |
+| `GET` | `/api/drills?limit=N` | Randomized set of tactics drills built from the player's own mistakes (FEN + engine best move) |
 | `GET` | `/api/games` | Paginated game list with filters (status, color, result, time_class) |
 | `GET` | `/api/games/{id}` | Full game detail including PGN |
 | `GET` | `/api/dashboard/stats` | Aggregated stats: win rates, accuracy distribution, opening performance, rating history |
@@ -783,13 +853,20 @@ Frontend proxies `/api/*` to `http://localhost:8086` via Vite's `server.proxy` c
 ### Reliability
 
 - **Malformed JSON from Ollama:** `OllamaAnalysisClient` catches JSON parse errors and
-  returns a fallback `MoveAnalysisResult` with `analysisFailed=true`. The move error is
-  still saved to DB for pattern counting, just without an explanation.
+  retries up to 3 times with exponential backoff (1 s, 2 s). On persistent failure the move
+  error is saved with `analysis_state = FAILED` — still counted in pattern aggregation but
+  without a natural-language explanation.
+- **Chess.com rate limiting (429):** `ChessComApiClient` retries up to 3 times with 10 s / 20 s
+  backoff before returning an empty result for that month.
 - **Chess.com 304 Not Modified:** The `SyncHistory` deduplication means most months are
   skipped before any HTTP call is made; 304 handling is a secondary safety net.
-- **Backend restart mid-analysis:** Because the entire `analyzeGames()` run is one
-  `@Transactional` context, a JVM kill rolls back all work. All affected games revert to
-  `PENDING` and can be picked up by Re-Analyze All on next boot.
+- **Backend restart mid-analysis:** Each game commits in its own `REQUIRES_NEW` transaction.
+  A JVM kill loses only the in-flight game. On next startup `@PostConstruct` in the orchestrator
+  resets any `ANALYZING` games to `PENDING`. Use **Analyze Pending** to resume without
+  re-running completed games.
+- **Stockfish process death:** `StockfishService.ensureAlive()` is called before every
+  synchronized operation. If the process has died, it is restarted via `destroy()` + `init()`
+  before continuing.
 
 ### Privacy
 
@@ -804,12 +881,11 @@ Frontend proxies `/api/*` to `http://localhost:8086` via Vite's `server.proxy` c
 
 | Feature | Description |
 |---|---|
-| **Per-game transactions** | Replace the single large `@Transactional` on `analyzeGames()` with a per-game commit via a separate `AnalysisTransactionService` bean. Makes the pipeline resumable after JVM kill without losing completed work. |
 | **Fine-tuned model** | Fine-tune a smaller model (e.g. `qwen2.5:1.5b`) on chess coaching data using Unsloth. Would reduce inference time from 7–16s to ~2s, cutting total analysis time from 50 min to ~10 min. |
 | **Opening Trainer** | Integrate a spaced-repetition opening drill module. Pattern report already identifies weak openings by ECO code — this would close the loop by generating drill positions from those lines. |
 | **Opponent analysis** | Extend sync to fetch opponent's recent games for detected weaknesses; useful for pre-game preparation. |
 | **Time pressure deep-dive** | Currently tracked as a boolean flag per move (clock < 30s). Future: correlate time pressure with mistake rate per opening/phase to identify specific situations where time management breaks down. |
-| **Stockfish alternative lines** | Current pipeline captures Stockfish's `bestmove` but not alternative lines. Storing the top-3 engine moves per position would allow more nuanced "why this is better" explanations from the LLM. |
+| **Analysis versioning** | Tag each MoveError with an analysis version (model + depth + prompt hash). When the model or prompt changes, stale explanations can be detected and selectively re-run without a full re-analysis. |
 
 ---
 
@@ -865,9 +941,9 @@ sequenceDiagram
         BE->>SF: evaluate all positions (centipawns)
         SF-->>BE: score per position
         BE->>BE: filter mistakes by threshold\n(≥1.0 pawn drop)
-        loop top 3 mistakes
-            BE->>OL: analyze FEN + move → JSON
-            OL-->>BE: severity, better_move, explanation, motif
+        loop top 3 mistakes (overlapped with MultiPV)
+            BE->>OL: FEN + move + engine lines → JSON
+            OL-->>BE: explanation, motif
         end
         BE->>DB: save MoveError records
         BE->>DB: game.status = ANALYZED

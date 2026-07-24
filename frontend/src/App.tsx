@@ -6,6 +6,8 @@ import { GameList } from './pages/GameList'
 import { GameAnalysis } from './pages/GameAnalysis'
 import { PatternReport } from './pages/PatternReport'
 import { TrainingPlan } from './pages/TrainingPlan'
+import { Insights } from './pages/Insights'
+import { Drills } from './pages/Drills'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -25,6 +27,8 @@ export default function App() {
             <Route index element={<Dashboard />} />
             <Route path="games" element={<GameList />} />
             <Route path="games/:id" element={<GameAnalysis />} />
+            <Route path="insights" element={<Insights />} />
+            <Route path="drills" element={<Drills />} />
             <Route path="patterns" element={<PatternReport />} />
             <Route path="training" element={<TrainingPlan />} />
             <Route path="*" element={<Navigate to="/" replace />} />

@@ -71,6 +71,16 @@ public class Game {
     @Column(name = "accuracy")
     private Double accuracy;
 
+    // Highest evaluation (pawns) the player reached in the game, from their perspective.
+    // Powers winning-position conversion analytics. Null until analyzed.
+    @Column(name = "max_advantage")
+    private Double maxAdvantage;
+
+    // Average seconds the player spent per move (derived from PGN clock annotations).
+    // Powers time-management analytics. Null when the game has no clock data.
+    @Column(name = "avg_move_seconds")
+    private Double avgMoveSeconds;
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private OffsetDateTime createdAt;

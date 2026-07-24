@@ -150,3 +150,102 @@ export interface TrainingPlan {
   openings_to_drill: string | null
   tactical_patterns: string | null
 }
+
+// --- Insights (practical analytics) ---
+
+export interface OpponentBucket {
+  bucket: string
+  games: number
+  wins: number
+  win_pct: number
+  avg_accuracy: number | null
+}
+
+export interface AccuracyTrendPoint {
+  date: string
+  accuracy: number
+  moving_avg: number
+}
+
+export interface TimeBucket {
+  label: string
+  games: number
+  wins: number
+  win_pct: number
+}
+
+export interface PhaseAccuracy {
+  opening: number
+  middlegame: number
+  endgame: number
+}
+
+export interface TimeManagement {
+  avg_move_seconds: number | null
+  total_blunders: number
+  blunders_in_time_pressure: number
+  time_trouble_rate: number
+}
+
+export interface BlownGame {
+  game_id: string
+  opening_name: string | null
+  max_advantage: number
+  result: string
+  played_at: string | null
+}
+
+export interface Conversion {
+  winning_games: number
+  converted: number
+  conversion_pct: number
+  blown_games: BlownGame[]
+}
+
+export interface MotifCount {
+  motif: string
+  count: number
+}
+
+export interface Tilt {
+  after_win_games: number
+  after_win_win_pct: number
+  after_loss_games: number
+  after_loss_win_pct: number
+}
+
+export interface OpeningInsight {
+  eco: string
+  name: string | null
+  games: number
+  win_pct: number
+  avg_accuracy: number | null
+}
+
+export interface Insights {
+  opponent_strength: OpponentBucket[]
+  accuracy_trend: AccuracyTrendPoint[]
+  time_of_day: TimeBucket[]
+  day_of_week: TimeBucket[]
+  phase_accuracy: PhaseAccuracy
+  time_management: TimeManagement
+  conversion: Conversion
+  missed_tactics: MotifCount[]
+  tilt: Tilt
+  openings: OpeningInsight[]
+}
+
+// --- Drills ---
+
+export interface Drill {
+  id: string
+  fen: string
+  best_move: string
+  move_played: string
+  severity: Severity
+  tactical_motif: TacticalMotif | null
+  game_phase: GamePhase | null
+  explanation: string | null
+  player_color: string
+  game_id: string | null
+}
